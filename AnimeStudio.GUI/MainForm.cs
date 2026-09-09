@@ -94,6 +94,7 @@ namespace AnimeStudio.GUI
         {
             Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US");
             InitializeComponent();
+            AddModelRootMetadataExportMenuItem();
             ApplyTheme();
             Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion}";
             InitializeExportOptions();
@@ -101,6 +102,118 @@ namespace AnimeStudio.GUI
             InitializeLogger();
             InitalizeOptions();
             FMODinit();
+        }
+
+        private void AddModelRootMetadataExportMenuItem()
+        {
+            var separator = new ToolStripSeparator();
+            var item = new ToolStripMenuItem("Export selected model root metadata (Raw + JSON)");
+            item.Click += exportSelectedModelRootMetadata_Click;
+            exportToolStripMenuItem.DropDownItems.Add(separator);
+            exportToolStripMenuItem.DropDownItems.Add(item);
+        }
+
+        private void exportSelectedModelRootMetadata_Click(object sender, EventArgs e)
+        {
+            if (sceneTreeView.Nodes.Count == 0)
+            {
+                StatusStripUpdate("No Objects available for export");
+                return;
+            }
+
+            // Use the same checked Scene Hierarchy roots as Models - Objects -> Export selected.
+            // This avoids guessing among duplicate/suffixed Animator names in the Asset List.
+            var gameObjects = new List<GameObject>();
+            GetSelectedParentNode(sceneTreeView.Nodes, gameObjects);
+            if (gameObjects.Count == 0)
+            {
+                StatusStripUpdate("No Object selected for metadata export.");
+                return;
+            }
+
+            var saveFolderDialog = new OpenFolderDialog();
+            saveFolderDialog.InitialFolder = saveDirectoryBackup;
+            if (saveFolderDialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            saveDirectoryBackup = saveFolderDialog.Folder;
+            var exportRoot = Path.Combine(saveFolderDialog.Folder, "ModelRootMetadata");
+            Directory.CreateDirectory(exportRoot);
+
+            var exported = 0;
+            foreach (var gameObject in gameObjects)
+            {
+                try
+                {
+                    var modelDir = Path.Combine(exportRoot, $"{Exporter.FixFileName(gameObject.m_Name)}.{gameObject.m_PathID}");
+                    Directory.CreateDirectory(modelDir);
+
+                    WriteModelRootObjectCapture(gameObject, "GameObject", modelDir);
+
+                    var manifest = new Dictionary<string, object>
+                    {
+                        ["RootName"] = gameObject.m_Name,
+                        ["GameObjectPathID"] = gameObject.m_PathID,
+                        ["GameObjectSourceFile"] = gameObject.assetsFile?.fileName ?? string.Empty,
+                        ["AnimatorPresent"] = gameObject.m_Animator != null
+                    };
+
+                    if (gameObject.m_Animator != null)
+                    {
+                        var animator = gameObject.m_Animator;
+                        WriteModelRootObjectCapture(animator, "Animator", modelDir);
+
+                        manifest["AnimatorPathID"] = animator.m_PathID;
+                        manifest["AnimatorSourceFile"] = animator.assetsFile?.fileName ?? string.Empty;
+                        manifest["AnimatorGameObjectFileID"] = animator.m_GameObject.m_FileID;
+                        manifest["AnimatorGameObjectPathID"] = animator.m_GameObject.m_PathID;
+                        manifest["AvatarFileID"] = animator.m_Avatar.m_FileID;
+                        manifest["AvatarPathID"] = animator.m_Avatar.m_PathID;
+                        manifest["ControllerFileID"] = animator.m_Controller.m_FileID;
+                        manifest["ControllerPathID"] = animator.m_Controller.m_PathID;
+                    }
+                    else
+                    {
+                        File.WriteAllText(
+                            Path.Combine(modelDir, "NO_ANIMATOR.txt"),
+                            "The selected Scene Hierarchy root has no resolved Animator component.\r\n");
+                    }
+
+                    File.WriteAllText(
+                        Path.Combine(modelDir, "root_manifest.json"),
+                        JsonConvert.SerializeObject(manifest, Formatting.Indented));
+
+                    Logger.Info(
+                        $"Captured model root {gameObject.m_Name} " +
+                        $"(GameObject PathID {gameObject.m_PathID}, " +
+                        $"Animator {(gameObject.m_Animator != null ? gameObject.m_Animator.m_PathID.ToString() : "none")}).");
+                    exported++;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Model root metadata export failed for {gameObject.m_Name}\r\n{ex}");
+                }
+            }
+
+            StatusStripUpdate($"Exported metadata for {exported}/{gameObjects.Count} selected model roots");
+            if (Properties.Settings.Default.openAfterExport)
+            {
+                OpenFolderInExplorer(exportRoot);
+            }
+        }
+
+        private static void WriteModelRootObjectCapture(AnimeStudio.Object asset, string typeName, string outputDirectory)
+        {
+            var stem = $"{typeName}.{asset.m_PathID}";
+            File.WriteAllBytes(Path.Combine(outputDirectory, stem + ".dat"), asset.GetRawData());
+
+            var settings = new JsonSerializerSettings();
+            settings.Converters.Add(new Newtonsoft.Json.Converters.StringEnumConverter());
+            File.WriteAllText(
+                Path.Combine(outputDirectory, stem + ".json"),
+                JsonConvert.SerializeObject(asset, Formatting.Indented, settings));
         }
 
         private void ApplyTheme()
