@@ -1233,6 +1233,17 @@ namespace AnimeStudio
         public ShaderPlatformInfos[] platformInfos;
 
         public override string Name => m_ParsedForm?.m_Name ?? m_Name;
+
+        /// <summary>
+        /// Raw-only fallback constructor for Shader objects whose serialized
+        /// payload AnimeStudio cannot currently parse.
+        /// </summary>
+        public Shader(ObjectReader reader, bool rawOnly) : base(reader)
+        {
+            // Deliberately skip Shader payload parsing. This keeps the object
+            // available for exact Raw export via Object.GetRawData().
+        }
+
         // public static bool HasPlatformInfos(SerializedType type) => type.Match("D114ED797139152A2E4A42339CF4AA8E"); // Star Rail
 
         public Shader(ObjectReader reader) : base(reader)

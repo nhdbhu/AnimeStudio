@@ -753,6 +753,27 @@ namespace AnimeStudio
                             .AppendLine($"PathID {objectInfo.m_PathID}")
                             .Append(e);
                         Logger.Error(sb.ToString());
+
+                        // If Shader parsing fails, keep a raw-only Shader object
+                        // instead of dropping it from the Asset List.
+                        if (objectReader.type == ClassIDType.Shader)
+                        {
+                            try
+                            {
+                                var rawShader = new Shader(objectReader, true);
+                                assetsFile.AddObject(rawShader);
+                                Logger.Warning(
+                                    $"Shader parse failed for {assetsFile.fileName} " +
+                                    $"PathID {objectInfo.m_PathID}; keeping raw-exportable fallback.");
+                            }
+                            catch (Exception fallbackException)
+                            {
+                                Logger.Error(
+                                    $"Unable to create raw Shader fallback for " +
+                                    $"{assetsFile.fileName} PathID {objectInfo.m_PathID}\r\n" +
+                                    fallbackException);
+                            }
+                        }
                     }
 
                     Progress.Report(++i, progressCount);
