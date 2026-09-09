@@ -385,6 +385,7 @@ namespace AnimeStudio.GUI
         private static bool TryExportFile(string dir, AssetItem item, string extension, out string fullPath)
         {
             var fileName = FixFileName(item.Text);
+            fileName = $"{fileName}.{item.m_PathID}";
             fullPath = Path.Combine(dir, $"{fileName}{extension}");
             if (!File.Exists(fullPath))
             {
