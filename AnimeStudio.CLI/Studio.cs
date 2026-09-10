@@ -231,7 +231,7 @@ namespace AnimeStudio.CLI
             }
         }
 
-        public static void BuildAssetData(ClassIDType[] typeFilters, Regex[] nameFilters, Regex[] containerFilters, ref int i)
+        public static void BuildAssetData(ClassIDType[] typeFilters, Regex[] nameFilters, Regex[] containerFilters, long[] pathIDFilters, ref int i)
         {
             var objectAssetItemDic = new Dictionary<Object, AssetItem>();
             var mihoyoBinDataNames = new List<(PPtr<Object>, string)>();
@@ -272,12 +272,30 @@ namespace AnimeStudio.CLI
                 }
             }
 
+            // Exact PathID capture mode: make requested objects exportable even when
+            // their class is disabled in the normal GUI/CLI type settings. This is
+            // intentionally narrow and only activates when --path_ids is supplied.
+            if (!pathIDFilters.IsNullOrEmpty())
+            {
+                var requested = new HashSet<long>(pathIDFilters);
+                var alreadyAdded = new HashSet<Object>(exportableAssets.Select(x => x.Asset));
+                foreach (var pair in objectAssetItemDic)
+                {
+                    if (requested.Contains(pair.Key.m_PathID) && !alreadyAdded.Contains(pair.Key))
+                    {
+                        exportableAssets.Add(pair.Value);
+                        alreadyAdded.Add(pair.Key);
+                    }
+                }
+            }
+
             var matches = exportableAssets.Where(x =>
             {
                 var isMatchRegex = nameFilters.IsNullOrEmpty() || nameFilters.Any(y => y.IsMatch(x.Text));
                 var isFilteredType = typeFilters.IsNullOrEmpty() || typeFilters.Contains(x.Type);
                 var isContainerMatch = containerFilters.IsNullOrEmpty() || containerFilters.Any(y => y.IsMatch(x.Container));
-                return isMatchRegex && isFilteredType && isContainerMatch;
+                var isPathIDMatch = pathIDFilters.IsNullOrEmpty() || pathIDFilters.Contains(x.m_PathID);
+                return isMatchRegex && isFilteredType && isContainerMatch && isPathIDMatch;
             }).ToArray();
             exportableAssets.Clear();
             exportableAssets.AddRange(matches);

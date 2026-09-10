@@ -26,6 +26,7 @@ namespace AnimeStudio.CLI
             rootCommand.Options.Add(optionsBinder.TypeFilter);
             rootCommand.Options.Add(optionsBinder.NameFilter);
             rootCommand.Options.Add(optionsBinder.ContainerFilter);
+            rootCommand.Options.Add(optionsBinder.PathIDFilter);
             rootCommand.Options.Add(optionsBinder.GameName);
             rootCommand.Options.Add(optionsBinder.MapOp);
             rootCommand.Options.Add(optionsBinder.MapType);
@@ -51,6 +52,7 @@ namespace AnimeStudio.CLI
         public string[] TypeFilter { get; set; }
         public Regex[] NameFilter { get; set; }
         public Regex[] ContainerFilter { get; set; }
+        public long[] PathIDFilter { get; set; }
         public string GameName { get; set; }
         public MapOpType MapOp { get; set; }
         public ExportListType MapType { get; set; }
@@ -72,6 +74,7 @@ namespace AnimeStudio.CLI
         public readonly Option<string[]> TypeFilter;
         public readonly Option<Regex[]> NameFilter;
         public readonly Option<Regex[]> ContainerFilter;
+        public readonly Option<long[]> PathIDFilter;
         public readonly Option<string> GameName;
         public readonly Option<MapOpType> MapOp;
         public readonly Option<ExportListType> MapType;
@@ -114,6 +117,12 @@ namespace AnimeStudio.CLI
                 Description = "Specify container regex filter(s).",
                 AllowMultipleArgumentsPerToken = true,
                 CustomParser = ParseRegexFilter
+            };
+            PathIDFilter = new Option<long[]>("--path_ids")
+            {
+                Description = "Specify exact PathID(s), or a text file containing one PathID per line.",
+                AllowMultipleArgumentsPerToken = true,
+                CustomParser = ParsePathIDFilter
             };
             GameName = new Option<string>("--game")
             {
@@ -306,6 +315,36 @@ namespace AnimeStudio.CLI
             return items.ToArray();
         }
 
+        private long[] ParsePathIDFilter(ArgumentResult result)
+        {
+            var items = new List<long>();
+            var values = result.Tokens.Select(x => x.Value).ToArray();
+            IEnumerable<string> source = values;
+
+            if (values.Length == 1 && File.Exists(values[0]))
+            {
+                source = File.ReadLines(values[0]);
+            }
+
+            foreach (var value in source)
+            {
+                var trimmed = value.Trim();
+                if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("#"))
+                    continue;
+
+                if (long.TryParse(trimmed, out var pathID))
+                {
+                    items.Add(pathID);
+                }
+                else
+                {
+                    result.AddError($"Invalid PathID: {trimmed}");
+                }
+            }
+
+            return items.Distinct().ToArray();
+        }
+
         public Options GetOptions(ParseResult parseResult) =>
         new()
         {
@@ -314,6 +353,7 @@ namespace AnimeStudio.CLI
             TypeFilter = parseResult.GetValue(TypeFilter),
             NameFilter = parseResult.GetValue(NameFilter),
             ContainerFilter = parseResult.GetValue(ContainerFilter),
+            PathIDFilter = parseResult.GetValue(PathIDFilter),
             GameName = parseResult.GetRequiredValue(GameName),
             MapOp = parseResult.GetValue(MapOp),
             MapType = parseResult.GetValue(MapType),
