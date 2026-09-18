@@ -3,19 +3,11 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using SkiaSharp;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats.Png;
-using SixLabors.ImageSharp.PixelFormats;
 
 namespace AnimeStudio
 {
     public static class ImageExtensions
     {
-        // Preserve the PNG byte stream produced by the pre-SkiaSharp AnimeStudio exporter.
-        // This intentionally affects PNG serialization only; SkiaSharp remains the working
-        // image representation for decoding, transforms, shaders, and other image formats.
-        private static readonly Configuration LegacyPngConfiguration = CreateLegacyPngConfiguration();
-
         public static SKBitmap CreateBitmapFromBgra(byte[] pixels, int width, int height)
         {
             var imageInfo = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Unpremul);
@@ -32,7 +24,7 @@ namespace AnimeStudio
                     image.EncodeToStream(stream, SKEncodedImageFormat.Jpeg, 90);
                     break;
                 case ImageFormat.Png:
-                    image.WriteLegacyPngToStream(stream);
+                    image.EncodeToStream(stream, SKEncodedImageFormat.Png, 100);
                     break;
                 case ImageFormat.Bmp:
                     image.WriteBmpToStream(stream);
@@ -269,21 +261,6 @@ namespace AnimeStudio
         private static float Lerp(float first, float second, float amount)
         {
             return first + (second - first) * amount;
-        }
-
-        private static Configuration CreateLegacyPngConfiguration()
-        {
-            var configuration = Configuration.Default.Clone();
-            configuration.PreferContiguousImageBuffers = true;
-            return configuration;
-        }
-
-        private static void WriteLegacyPngToStream(this SKBitmap image, Stream stream)
-        {
-            var pixels = image.ConvertToBytes() ?? throw new InvalidOperationException("The bitmap has no pixel buffer.");
-            using var legacyImage = SixLabors.ImageSharp.Image.LoadPixelData<Bgra32>(
-                LegacyPngConfiguration, pixels, image.Width, image.Height);
-            legacyImage.Save(stream, new PngEncoder());
         }
 
         private static void EncodeToStream(this SKBitmap image, Stream stream, SKEncodedImageFormat format, int quality)
