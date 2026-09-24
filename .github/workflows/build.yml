@@ -78,7 +78,7 @@ jobs:
           -c Release
           -f net9.0
           -r linux-x64
-          --self-contained false
+          --self-contained true
           -o dist/linux-x64/net9.0
 
       - name: Publish Linux CLI (.NET 10)
@@ -87,7 +87,7 @@ jobs:
           -c Release
           -f net10.0
           -r linux-x64
-          --self-contained false
+          --self-contained true
           -o dist/linux-x64/net10.0
 
       - name: Smoke-test Linux CLI (.NET 9)
