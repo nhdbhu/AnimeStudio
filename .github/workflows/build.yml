@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'master'
+      - 'genshin-linux-cli'
     paths-ignore:
       - '**/LICENSE'
       - '**/README.md'
@@ -54,3 +55,55 @@ jobs:
         with:
           name: AnimeStudio-net10
           path: output-net10
+
+  linux-cli:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: Restore Linux CLI
+        run: dotnet restore AnimeStudio.CLI/AnimeStudio.CLI.csproj
+
+      - name: Publish Linux CLI (.NET 9)
+        run: >-
+          dotnet publish AnimeStudio.CLI/AnimeStudio.CLI.csproj
+          -c Release
+          -f net9.0
+          -r linux-x64
+          --self-contained false
+          -o dist/linux-x64/net9.0
+
+      - name: Publish Linux CLI (.NET 10)
+        run: >-
+          dotnet publish AnimeStudio.CLI/AnimeStudio.CLI.csproj
+          -c Release
+          -f net10.0
+          -r linux-x64
+          --self-contained false
+          -o dist/linux-x64/net10.0
+
+      - name: Smoke-test Linux CLI (.NET 9)
+        run: ./dist/linux-x64/net9.0/AnimeStudio.CLI --help
+
+      - name: Smoke-test Linux CLI (.NET 10)
+        run: ./dist/linux-x64/net10.0/AnimeStudio.CLI --help
+
+      - name: Upload Linux CLI (.NET 9)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeStudio-CLI-linux-x64-net9
+          path: dist/linux-x64/net9.0
+
+      - name: Upload Linux CLI (.NET 10)
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeStudio-CLI-linux-x64-net10
+          path: dist/linux-x64/net10.0
