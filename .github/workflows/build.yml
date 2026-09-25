@@ -8,7 +8,6 @@ on:
     paths-ignore:
       - '**/LICENSE'
       - '**/README.md'
-      - '**/build.yml'
       - '**/.gitignore'
       - '**/.gitattributes'
   workflow_dispatch:
@@ -69,6 +68,20 @@ jobs:
             9.0.x
             10.0.x
 
+      - name: Build native Ooz for Linux
+        run: |
+          cmake -S AnimeStudio.Ooz -B build-ooz \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOOZ_BUILD_BUN=OFF \
+            -DOOZ_BUILD_EXE=OFF \
+            -DOOZ_BUILD_VALIDATE=OFF
+          cmake --build build-ooz --config Release --parallel
+
+      - name: Verify native Ooz
+        run: |
+          file build-ooz/libAnimeStudio.Ooz.dll.so
+          nm -D build-ooz/libAnimeStudio.Ooz.dll.so | grep ' Ooz_Decompress$'
+
       - name: Restore Linux CLI
         run: dotnet restore AnimeStudio.CLI/AnimeStudio.CLI.csproj
 
@@ -89,6 +102,16 @@ jobs:
           -r linux-x64
           --self-contained true
           -o dist/linux-x64/net10.0
+
+      - name: Package native Ooz into Linux CLI artifacts
+        run: |
+          cp build-ooz/libAnimeStudio.Ooz.dll.so dist/linux-x64/net9.0/
+          cp build-ooz/libAnimeStudio.Ooz.dll.so dist/linux-x64/net10.0/
+
+      - name: Verify packaged native Ooz
+        run: |
+          file dist/linux-x64/net9.0/libAnimeStudio.Ooz.dll.so
+          file dist/linux-x64/net10.0/libAnimeStudio.Ooz.dll.so
 
       - name: Smoke-test Linux CLI (.NET 9)
         run: ./dist/linux-x64/net9.0/AnimeStudio.CLI --help

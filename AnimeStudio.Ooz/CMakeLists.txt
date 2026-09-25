@@ -36,6 +36,12 @@ set(OOZ_SOURCES
 
 add_library(libooz SHARED ${OOZ_SOURCES})
 
+# P/Invoke uses "AnimeStudio.Ooz.dll". On Linux, .NET probes
+# libAnimeStudio.Ooz.dll.so for that logical library name.
+if(UNIX)
+    set_target_properties(libooz PROPERTIES OUTPUT_NAME "AnimeStudio.Ooz.dll")
+endif()
+
 target_compile_definitions(libooz PUBLIC OOZ_DYNAMIC)
 target_compile_definitions(libooz PRIVATE OOZ_BUILD_DLL)
 
