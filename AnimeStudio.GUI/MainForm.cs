@@ -95,6 +95,7 @@ namespace AnimeStudio.GUI
             Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US");
             InitializeComponent();
             AddModelRootMetadataExportMenuItem();
+            AddResolvedModelExportMenuItems();
             ApplyTheme();
             Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion}";
             InitializeExportOptions();
@@ -111,6 +112,49 @@ namespace AnimeStudio.GUI
             item.Click += exportSelectedModelRootMetadata_Click;
             exportToolStripMenuItem.DropDownItems.Add(separator);
             exportToolStripMenuItem.DropDownItems.Add(item);
+        }
+
+        private void AddResolvedModelExportMenuItems()
+        {
+            var enableResolved = new ToolStripMenuItem("Build strict .resolved package with model exports")
+            {
+                CheckOnClick = true,
+                Checked = Properties.Settings.Default.exportResolvedModelPackage
+            };
+            enableResolved.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.exportResolvedModelPackage = enableResolved.Checked;
+                Properties.Settings.Default.Save();
+            };
+
+            var loadDummyDll = new ToolStripMenuItem("Load DummyDll folder for resolved model export");
+            loadDummyDll.Click += (_, _) =>
+            {
+                if (Studio.LoadAssemblyFolderInteractive())
+                    StatusStripUpdate("DummyDll assemblies loaded for resolved export");
+                else
+                    StatusStripUpdate("DummyDll folder not loaded");
+            };
+
+            var readiness = new ToolStripMenuItem("Check resolved model export readiness");
+            readiness.Click += (_, _) =>
+            {
+                var lines = new List<string>
+                {
+                    $"Game: {Studio.Game.Name}",
+                    $"Resolve dependencies: {(Studio.assetsManager.ResolveDependencies ? "ON" : "OFF")}",
+                    $"CAB map loaded: {(AssetsHelper.CABMapLoaded ? $"YES ({AssetsHelper.CABMapCount} CABs)" : "NO")}",
+                    $"DummyDll loaded: {(Studio.assemblyLoader.Loaded ? $"YES ({Studio.assemblyLoader.LoadedAssemblyCount} assemblies)" : "NO")}"
+                };
+                var ready = Studio.assetsManager.ResolveDependencies && AssetsHelper.CABMapLoaded && Studio.assemblyLoader.Loaded;
+                lines.Add(ready ? "READY for strict resolved model export." : "NOT READY: fix the NO/OFF items before export.");
+                MessageBox.Show(string.Join(Environment.NewLine, lines), "Resolved model export readiness", MessageBoxButtons.OK, ready ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            };
+
+            exportToolStripMenuItem.DropDownItems.Add(new ToolStripSeparator());
+            exportToolStripMenuItem.DropDownItems.Add(enableResolved);
+            exportToolStripMenuItem.DropDownItems.Add(loadDummyDll);
+            exportToolStripMenuItem.DropDownItems.Add(readiness);
         }
 
         private void exportSelectedModelRootMetadata_Click(object sender, EventArgs e)
@@ -436,12 +480,32 @@ namespace AnimeStudio.GUI
 
             try
             {
-                TypeFlags.SetTypes(JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Properties.Settings.Default.types));
+                var configuredTypes = JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Properties.Settings.Default.types);
+                var changedTypes = false;
+                if (!configuredTypes.ContainsKey(ClassIDType.Cubemap))
+                {
+                    configuredTypes[ClassIDType.Cubemap] = (true, false);
+                    changedTypes = true;
+                }
+                if (!configuredTypes.ContainsKey(ClassIDType.ParticleSystemRenderer))
+                {
+                    configuredTypes[ClassIDType.ParticleSystemRenderer] = (true, false);
+                    changedTypes = true;
+                }
+                if (changedTypes)
+                {
+                    Properties.Settings.Default.types = JsonConvert.SerializeObject(configuredTypes);
+                    Properties.Settings.Default.Save();
+                }
+                TypeFlags.SetTypes(configuredTypes);
             } catch (Newtonsoft.Json.JsonSerializationException)
             {
                 // Fixes an issue where the application won't load if invalid settings from another version of Studio were previously saved.
                 Properties.Settings.Default.Reset();
-                TypeFlags.SetTypes(JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Properties.Settings.Default.types));
+                var configuredTypes = JsonConvert.DeserializeObject<Dictionary<ClassIDType, (bool, bool)>>(Properties.Settings.Default.types);
+                configuredTypes[ClassIDType.Cubemap] = (true, false);
+                configuredTypes[ClassIDType.ParticleSystemRenderer] = (true, false);
+                TypeFlags.SetTypes(configuredTypes);
             }
             
             Logger.Info($"Target Game is {Studio.Game.Type}");

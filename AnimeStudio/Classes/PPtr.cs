@@ -36,7 +36,19 @@ namespace AnimeStudio
             return node;
         }
 
-        private bool TryGetAssetsFile(out SerializedFile result)
+        public string GetSourceFileName() => assetsFile?.fileName;
+
+        public string GetSourceOriginalPath() => assetsFile?.originalPath;
+
+        public string GetTargetFileName()
+        {
+            if (m_FileID == 0) return assetsFile?.fileName;
+            if (m_FileID > 0 && assetsFile != null && m_FileID - 1 < assetsFile.m_Externals.Count)
+                return assetsFile.m_Externals[m_FileID - 1].fileName;
+            return null;
+        }
+
+        public bool TryGetAssetsFile(out SerializedFile result)
         {
             result = null;
             if (m_FileID == 0)

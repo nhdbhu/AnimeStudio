@@ -566,6 +566,8 @@ namespace AnimeStudio.GUI
             if (convert is ModelConverter modelConverter)
             {
                 ExportModelMetadata(modelConverter, exportPath);
+                if (Properties.Settings.Default.exportResolvedModelPackage && Studio.Game.Type.IsGISubGroup())
+                    ResolvedModelPackageExporter.Export(modelConverter, exportPath);
             }
         }
 

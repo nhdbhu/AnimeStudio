@@ -346,6 +346,11 @@ namespace AnimeStudio.GUI
                                 assetItem.FullSize = asset.byteSize + m_Texture2D.m_StreamData.size;
                             exportable = ClassIDType.Texture2D.CanExport();
                             break;
+                        case Cubemap m_Cubemap:
+                            if (!string.IsNullOrEmpty(m_Cubemap.m_StreamData?.path))
+                                assetItem.FullSize = asset.byteSize + m_Cubemap.m_StreamData.size;
+                            exportable = ClassIDType.Cubemap.CanExport();
+                            break;
                         case AudioClip m_AudioClip:
                             if (!string.IsNullOrEmpty(m_AudioClip.m_Source))
                                 assetItem.FullSize = asset.byteSize + m_AudioClip.m_Size;
@@ -1060,21 +1065,26 @@ namespace AnimeStudio.GUI
             }
         }
 
+        public static bool LoadAssemblyFolderInteractive(bool replaceExisting = true)
+        {
+            var openFolderDialog = new OpenFolderDialog();
+            openFolderDialog.Title = "Select DummyDll / Assembly Folder";
+            if (openFolderDialog.ShowDialog() != DialogResult.OK) return false;
+            if (replaceExisting)
+                assemblyLoader.Clear();
+            assemblyLoader.Load(openFolderDialog.Folder);
+            return assemblyLoader.Loaded;
+        }
+
+        public static bool EnsureAssemblyLoaderLoaded()
+        {
+            if (assemblyLoader.Loaded) return true;
+            return LoadAssemblyFolderInteractive(false);
+        }
+
         public static TypeTree MonoBehaviourToTypeTree(MonoBehaviour m_MonoBehaviour)
         {
-            if (!assemblyLoader.Loaded)
-            {
-                var openFolderDialog = new OpenFolderDialog();
-                openFolderDialog.Title = "Select Assembly Folder";
-                if (openFolderDialog.ShowDialog() == DialogResult.OK)
-                {
-                    assemblyLoader.Load(openFolderDialog.Folder);
-                }
-                else
-                {
-                    assemblyLoader.Loaded = true;
-                }
-            }
+            if (!EnsureAssemblyLoaderLoaded()) return null;
             return m_MonoBehaviour.ConvertToTypeTree(assemblyLoader);
         }
 

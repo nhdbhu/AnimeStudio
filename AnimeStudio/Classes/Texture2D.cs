@@ -77,10 +77,22 @@ namespace AnimeStudio
     {
         public int m_Width;
         public int m_Height;
+        public int m_CompleteImageSize;
+        public int m_MipsStripped;
         public TextureFormat m_TextureFormat;
         public bool m_MipMap;
         public int m_MipCount;
+        public bool m_IsReadable;
+        public bool m_IsPreProcessed;
+        public bool m_IgnoreMasterTextureLimit;
+        public bool m_StreamingMipmaps;
+        public int m_StreamingMipmapsPriority;
+        public int m_ImageCount;
+        public int m_TextureDimension;
+        public int m_LightmapFormat;
         public int m_ColorSpace;
+        public byte[] m_PlatformBlob;
+        public uint m_ExternalMipRelativeOffset;
         public GLTextureSettings m_TextureSettings;
         public ResourceReader image_data;
         public StreamingInfo m_StreamData;
@@ -91,10 +103,10 @@ namespace AnimeStudio
         {
             m_Width = reader.ReadInt32();
             m_Height = reader.ReadInt32();
-            var m_CompleteImageSize = reader.ReadInt32();
+            m_CompleteImageSize = reader.ReadInt32();
             if (version[0] >= 2020) //2020.1 and up
             {
-                var m_MipsStripped = reader.ReadInt32();
+                m_MipsStripped = reader.ReadInt32();
             }
             m_TextureFormat = (TextureFormat)reader.ReadInt32();
   
@@ -108,7 +120,7 @@ namespace AnimeStudio
             }
             if (version[0] > 2 || (version[0] == 2 && version[1] >= 6)) //2.6.0 and up
             {
-                var m_IsReadable = reader.ReadBoolean();
+                m_IsReadable = reader.ReadBoolean();
                 if (reader.Game.Type.IsGI() && HasGNFTexture(reader.serializedType))
                 {
                     var m_IsGNFTexture = reader.ReadBoolean();
@@ -116,11 +128,11 @@ namespace AnimeStudio
             }
             if (version[0] >= 2020 || reader.Game.Type.IsZZZ()) //2020.1 and up
             {
-                var m_IsPreProcessed = reader.ReadBoolean();
+                m_IsPreProcessed = reader.ReadBoolean();
             }
             if (version[0] > 2019 || (version[0] == 2019 && version[1] >= 3)) //2019.3 and up
             {
-                var m_IgnoreMasterTextureLimit = reader.ReadBoolean();
+                m_IgnoreMasterTextureLimit = reader.ReadBoolean();
             }
             if (version[0] > 2022 || (version[0] == 2022 && version[1] >= 2)) //2022.2 and up
             {
@@ -144,7 +156,7 @@ namespace AnimeStudio
                 {
                     reader.AlignStream();
                 }
-                var m_StreamingMipmaps = reader.ReadBoolean();
+                m_StreamingMipmaps = reader.ReadBoolean();
             }
             reader.AlignStream();
             if (reader.Game.Type.IsGI() && HasGNFTexture(reader.serializedType))
@@ -153,7 +165,7 @@ namespace AnimeStudio
             }
             if (version[0] > 2018 || (version[0] == 2018 && version[1] >= 2)) //2018.2 and up
             {
-                var m_StreamingMipmapsPriority = reader.ReadInt32();
+                m_StreamingMipmapsPriority = reader.ReadInt32();
             }
             if (reader.Game.Type.IsZZZ())
             {
@@ -164,12 +176,12 @@ namespace AnimeStudio
             {
                 reader.AlignStream();
             }
-            var m_ImageCount = reader.ReadInt32();
-            var m_TextureDimension = reader.ReadInt32();
+            m_ImageCount = reader.ReadInt32();
+            m_TextureDimension = reader.ReadInt32();
             m_TextureSettings = new GLTextureSettings(reader);
             if (version[0] >= 3) //3.0 and up
             {
-                var m_LightmapFormat = reader.ReadInt32();
+                m_LightmapFormat = reader.ReadInt32();
             }
             if (version[0] > 3 || (version[0] == 3 && version[1] >= 5)) //3.5.0 and up
             {
@@ -177,7 +189,7 @@ namespace AnimeStudio
             }
             if (version[0] > 2020 || (version[0] == 2020 && version[1] >= 2)) //2020.2 and up
             {
-                var m_PlatformBlob = reader.ReadUInt8Array();
+                m_PlatformBlob = reader.ReadUInt8Array();
                 reader.AlignStream();
             }
             var image_data_size = reader.ReadInt32();
@@ -185,7 +197,7 @@ namespace AnimeStudio
             {
                 if (reader.Game.Type.IsGI() && HasExternalMipRelativeOffset(reader.serializedType))
                 {
-                    var m_externalMipRelativeOffset = reader.ReadUInt32();
+                    m_ExternalMipRelativeOffset = reader.ReadUInt32();
                 }
                 if (reader.Game.Type.IsZZZ())
                 {

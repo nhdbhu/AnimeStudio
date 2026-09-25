@@ -57,6 +57,8 @@ namespace AnimeStudio
 
         // Exact source identities for the selected export roots. Names are not unique.
         public List<ModelRootIdentity> RootIdentities { get; } = new();
+        private readonly List<GameObject> rootGameObjects = new();
+        public IReadOnlyList<GameObject> RootGameObjects => rootGameObjects;
 
         // Full renderer material dependency order is separate from FBX polygon material assignment.
         // This preserves dependencies such as Ronova Wing A_32 without inventing submesh slots.
@@ -191,6 +193,7 @@ namespace AnimeStudio
             }
 
             RootIdentities.Add(identity);
+            rootGameObjects.Add(gameObject);
         }
 
         private void InitWithAnimator(Animator m_Animator)

@@ -659,6 +659,8 @@ namespace AnimeStudio
         public uint m_BlobIndex;
         public ParserBindChannels m_Channels;
         public ushort[] m_KeywordIndices;
+        public ushort[] m_GlobalKeywordIndices;
+        public ushort[] m_LocalKeywordIndices;
         public sbyte m_ShaderHardwareTier;
         public ShaderGpuProgramType m_GpuProgramType;
         public SerializedProgramParameters m_Parameters;
@@ -702,9 +704,9 @@ namespace AnimeStudio
 
             if ((version[0] >= 2019 && version[0] < 2021) || (version[0] == 2021 && version[1] < 2) || HasGlobalLocalKeywordIndices(reader.serializedType)) //2019 ~2021.1
             {
-                var m_GlobalKeywordIndices = reader.ReadUInt16Array();
+                m_GlobalKeywordIndices = reader.ReadUInt16Array();
                 reader.AlignStream();
-                var m_LocalKeywordIndices = reader.ReadUInt16Array();
+                m_LocalKeywordIndices = reader.ReadUInt16Array();
                 reader.AlignStream();
             }
             else
@@ -723,7 +725,7 @@ namespace AnimeStudio
             if (reader.Game.Name == "GI" && (m_GpuProgramType == ShaderGpuProgramType.Unknown || !Enum.IsDefined(typeof(ShaderGpuProgramType), m_GpuProgramType)))
             {
                 reader.Position -= 4;
-                var m_LocalKeywordIndices = reader.ReadUInt16Array();
+                m_LocalKeywordIndices = reader.ReadUInt16Array();
                 reader.AlignStream();
 
                 m_ShaderHardwareTier = reader.ReadSByte();
@@ -1231,6 +1233,9 @@ namespace AnimeStudio
         public byte[] compressedBlob;
         public uint[] stageCounts;
         public ShaderPlatformInfos[] platformInfos;
+        public List<PPtr<Shader>> m_Dependencies = new();
+        public List<KeyValuePair<string, PPtr<Texture>>> m_NonModifiableTextures = new();
+        public bool m_IsRawOnly;
 
         public override string Name => m_ParsedForm?.m_Name ?? m_Name;
 
@@ -1242,6 +1247,7 @@ namespace AnimeStudio
         {
             // Deliberately skip Shader payload parsing. This keeps the object
             // available for exact Raw export via Object.GetRawData().
+            m_IsRawOnly = true;
         }
 
         // public static bool HasPlatformInfos(SerializedType type) => type.Match("D114ED797139152A2E4A42339CF4AA8E"); // Star Rail
@@ -1336,7 +1342,7 @@ namespace AnimeStudio
                 var m_DependenciesCount = reader.ReadInt32();
                 for (int i = 0; i < m_DependenciesCount; i++)
                 {
-                    new PPtr<Shader>(reader);
+                    m_Dependencies.Add(new PPtr<Shader>(reader));
                 }
 
                 if (version[0] >= 2018)
@@ -1345,7 +1351,7 @@ namespace AnimeStudio
                     for (int i = 0; i < m_NonModifiableTexturesCount; i++)
                     {
                         var first = reader.ReadAlignedString();
-                        new PPtr<Texture>(reader);
+                        m_NonModifiableTextures.Add(new KeyValuePair<string, PPtr<Texture>>(first, new PPtr<Texture>(reader)));
                     }
                 }
 

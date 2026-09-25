@@ -29,6 +29,11 @@ namespace AnimeStudio
 
         public static Dictionary<ulong, string> Paths { get; set; } = new Dictionary<ulong, string>();
 
+        // Export validation must distinguish ResolveDependencies=true from an actually loaded CAB map.
+        public static bool CABMapLoaded => CABMap.Count > 0;
+        public static int CABMapCount => CABMap.Count;
+        public static string CABMapBaseFolder => BaseFolder;
+
         public record Entry
         {
             public string Path { get; set; }

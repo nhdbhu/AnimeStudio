@@ -45,7 +45,46 @@ namespace AnimeStudio
             return header + Encoding.UTF8.GetString(shader.m_Script);
         }
 
-        private static string ConvertSerializedShader(Shader shader)
+        public sealed class ExtractedShaderProgram
+        {
+            public int PlatformIndex { get; set; }
+            public ShaderCompilerPlatform Platform { get; set; }
+            public int VariantIndex { get; set; }
+            public ShaderGpuProgramType ProgramType { get; set; }
+            public string[] Keywords { get; set; }
+            public string[] LocalKeywords { get; set; }
+            public byte[] ProgramCode { get; set; }
+        }
+
+        public static List<ExtractedShaderProgram> ExtractPrograms(this Shader shader)
+        {
+            var result = new List<ExtractedShaderProgram>();
+            if (shader?.platforms == null || shader.compressedBlob == null || shader.offsets == null) return result;
+            var shaderPrograms = ReadShaderPrograms(shader);
+            for (var platformIndex = 0; platformIndex < shaderPrograms.Length; platformIndex++)
+            {
+                var program = shaderPrograms[platformIndex];
+                if (program?.m_SubPrograms == null) continue;
+                for (var variantIndex = 0; variantIndex < program.m_SubPrograms.Length; variantIndex++)
+                {
+                    var sub = program.m_SubPrograms[variantIndex];
+                    if (sub == null) continue;
+                    result.Add(new ExtractedShaderProgram
+                    {
+                        PlatformIndex = platformIndex,
+                        Platform = shader.platforms[platformIndex],
+                        VariantIndex = variantIndex,
+                        ProgramType = sub.m_ProgramType,
+                        Keywords = sub.m_Keywords ?? Array.Empty<string>(),
+                        LocalKeywords = sub.m_LocalKeywords ?? Array.Empty<string>(),
+                        ProgramCode = sub.m_ProgramCode ?? Array.Empty<byte>()
+                    });
+                }
+            }
+            return result;
+        }
+
+        private static ShaderProgram[] ReadShaderPrograms(Shader shader)
         {
             var length = shader.platforms.Length;
             var shaderPrograms = new ShaderProgram[length];
@@ -80,6 +119,12 @@ namespace AnimeStudio
                 }
             }
 
+            return shaderPrograms;
+        }
+
+        private static string ConvertSerializedShader(Shader shader)
+        {
+            var shaderPrograms = ReadShaderPrograms(shader);
             return ConvertSerializedShader(shader.m_ParsedForm, shader.platforms, shaderPrograms);
         }
 

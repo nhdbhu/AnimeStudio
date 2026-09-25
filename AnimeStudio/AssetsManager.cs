@@ -715,6 +715,8 @@ namespace AnimeStudio
                             ClassIDType.AnimatorOverrideController when ClassIDType.AnimatorOverrideController.CanParse() => new AnimatorOverrideController(objectReader),
                             ClassIDType.AssetBundle when ClassIDType.AssetBundle.CanParse() => new AssetBundle(objectReader),
                             ClassIDType.AudioClip when ClassIDType.AudioClip.CanParse() => new AudioClip(objectReader),
+                            ClassIDType.Cubemap when ClassIDType.Cubemap.CanParse() && objectReader.Game.Type.IsGISubGroup() => new Cubemap(objectReader),
+                            ClassIDType.ParticleSystemRenderer when ClassIDType.ParticleSystemRenderer.CanParse() && objectReader.Game.Type.IsGISubGroup() => new ParticleSystemRenderer(objectReader),
                             ClassIDType.Avatar when ClassIDType.Avatar.CanParse() => new Avatar(objectReader),
                             ClassIDType.Font when ClassIDType.Font.CanParse() => new Font(objectReader),
                             ClassIDType.GameObject when ClassIDType.GameObject.CanParse() => new GameObject(objectReader),
@@ -770,6 +772,29 @@ namespace AnimeStudio
                             {
                                 Logger.Error(
                                     $"Unable to create raw Shader fallback for " +
+                                    $"{assetsFile.fileName} PathID {objectInfo.m_PathID}\r\n" +
+                                    fallbackException);
+                            }
+                        }
+                        else if (objectReader.type == ClassIDType.Cubemap || objectReader.type == ClassIDType.ParticleSystemRenderer)
+                        {
+                            // These parsers are additions for the Genshin resolved exporter. If a
+                            // version-specific object layout is not understood, retain the object as
+                            // exact raw provenance instead of dropping its PathID from the file. The
+                            // resolved exporter will then fail closed for a raw renderer (material
+                            // closure unprovable) or warn for other provenance-only native objects.
+                            try
+                            {
+                                var rawObject = new Object(objectReader);
+                                assetsFile.AddObject(rawObject);
+                                Logger.Warning(
+                                    $"{objectReader.type} parse failed for {assetsFile.fileName} " +
+                                    $"PathID {objectInfo.m_PathID}; keeping raw fallback object.");
+                            }
+                            catch (Exception fallbackException)
+                            {
+                                Logger.Error(
+                                    $"Unable to create raw {objectReader.type} fallback for " +
                                     $"{assetsFile.fileName} PathID {objectInfo.m_PathID}\r\n" +
                                     fallbackException);
                             }

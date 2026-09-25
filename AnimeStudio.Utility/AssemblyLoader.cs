@@ -7,6 +7,7 @@ namespace AnimeStudio
     public class AssemblyLoader
     {
         public bool Loaded;
+        public int LoadedAssemblyCount => moduleDic.Count;
         private Dictionary<string, ModuleDefinition> moduleDic = new Dictionary<string, ModuleDefinition>();
 
         public void Load(string path)
@@ -28,7 +29,7 @@ namespace AnimeStudio
                     // ignored
                 }
             }
-            Loaded = true;
+            Loaded = moduleDic.Count > 0;
         }
 
         public TypeDefinition GetTypeDefinition(string assemblyName, string fullName)
