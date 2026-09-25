@@ -934,6 +934,17 @@ namespace AnimeStudio.GUI
                 if (gameObjects.Count > 0)
                 {
                     var count = gameObjects.Count;
+                    var duplicateOrdinals = gameObjects
+                        .GroupBy(x => x.m_Name, StringComparer.Ordinal)
+                        .Where(x => x.Count() > 1)
+                        .ToDictionary(
+                            x => x.Key,
+                            x => x.OrderBy(y => y.assetsFile?.originalPath ?? string.Empty, StringComparer.Ordinal)
+                                  .ThenBy(y => y.assetsFile?.fileName ?? string.Empty, StringComparer.Ordinal)
+                                  .ThenBy(y => y.m_PathID)
+                                  .Select((y, index) => (GameObject: y, Ordinal: index + 1))
+                                  .ToDictionary(y => y.GameObject, y => y.Ordinal),
+                            StringComparer.Ordinal);
                     int i = 0;
                     Progress.Reset();
                     foreach (var gameObject in gameObjects)
@@ -941,7 +952,12 @@ namespace AnimeStudio.GUI
                         StatusStripUpdate($"Exporting {gameObject.m_Name}");
                         try
                         {
-                            var subExportPath = Path.Combine(exportPath, gameObject.m_Name) + Path.DirectorySeparatorChar;
+                            var folderName = FixFileName(gameObject.m_Name);
+                            if (duplicateOrdinals.TryGetValue(gameObject.m_Name, out var ordinals))
+                            {
+                                folderName = $"{folderName}__root{ordinals[gameObject]:D2}";
+                            }
+                            var subExportPath = Path.Combine(exportPath, folderName) + Path.DirectorySeparatorChar;
                             ExportGameObject(gameObject, subExportPath, animationList);
                             StatusStripUpdate($"Finished exporting {gameObject.m_Name}");
                         }

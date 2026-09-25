@@ -301,6 +301,7 @@ namespace AnimeStudio.GUI
 
         private void InitializeExportOptions()
         {
+            MigrateLegacyUvDefaults();
             enableConsole.Checked = Properties.Settings.Default.enableConsole;
             enableFileLogging.Checked = Properties.Settings.Default.enableFileLogging;
             displayAll.Checked = Properties.Settings.Default.displayAll;
@@ -317,6 +318,55 @@ namespace AnimeStudio.GUI
             MiHoYoBinData.Encrypted = Properties.Settings.Default.encrypted;
             MiHoYoBinData.Key = Properties.Settings.Default.key;
             AssetsHelper.Minimal = Properties.Settings.Default.minimalAssetMap;
+        }
+
+        private static void MigrateLegacyUvDefaults()
+        {
+            try
+            {
+                var uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(Properties.Settings.Default.uvs);
+                if (uvs == null || uvs.Count == 0)
+                {
+                    return;
+                }
+
+                var isLegacyDefault = true;
+                for (var uv = 0; uv < 8; uv++)
+                {
+                    if (!uvs.TryGetValue($"UV{uv}", out var setting))
+                    {
+                        isLegacyDefault = false;
+                        break;
+                    }
+
+                    var expectedEnabled = uv < 2;
+                    var expectedType = uv == 1 ? 1 : 0;
+                    if (setting.Item1 != expectedEnabled || setting.Item2 != expectedType)
+                    {
+                        isLegacyDefault = false;
+                        break;
+                    }
+                }
+
+                if (!isLegacyDefault)
+                {
+                    return;
+                }
+
+                for (var uv = 2; uv < 8; uv++)
+                {
+                    var key = $"UV{uv}";
+                    var setting = uvs[key];
+                    uvs[key] = (true, setting.Item2);
+                }
+
+                Properties.Settings.Default.uvs = JsonConvert.SerializeObject(uvs);
+                Properties.Settings.Default.Save();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Unable to migrate legacy UV export defaults: {ex.Message}");
+            }
         }
 
         private void InitializeLogger()

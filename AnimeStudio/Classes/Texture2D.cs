@@ -30,7 +30,11 @@ namespace AnimeStudio
         public int m_FilterMode;
         public int m_Aniso;
         public float m_MipBias;
+        // Keep m_WrapMode as the legacy alias for U so existing preview code stays compatible.
         public int m_WrapMode;
+        public int m_WrapU;
+        public int m_WrapV;
+        public int m_WrapW;
 
         public GLTextureSettings(ObjectReader reader)
         {
@@ -45,13 +49,17 @@ namespace AnimeStudio
             }
             if (version[0] >= 2017)//2017.x and up
             {
-                m_WrapMode = reader.ReadInt32(); //m_WrapU
-                int m_WrapV = reader.ReadInt32();
-                int m_WrapW = reader.ReadInt32();
+                m_WrapU = reader.ReadInt32();
+                m_WrapV = reader.ReadInt32();
+                m_WrapW = reader.ReadInt32();
+                m_WrapMode = m_WrapU;
             }
             else
             {
                 m_WrapMode = reader.ReadInt32();
+                m_WrapU = m_WrapMode;
+                m_WrapV = m_WrapMode;
+                m_WrapW = m_WrapMode;
             }
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
@@ -72,6 +80,7 @@ namespace AnimeStudio
         public TextureFormat m_TextureFormat;
         public bool m_MipMap;
         public int m_MipCount;
+        public int m_ColorSpace;
         public GLTextureSettings m_TextureSettings;
         public ResourceReader image_data;
         public StreamingInfo m_StreamData;
@@ -164,7 +173,7 @@ namespace AnimeStudio
             }
             if (version[0] > 3 || (version[0] == 3 && version[1] >= 5)) //3.5.0 and up
             {
-                var m_ColorSpace = reader.ReadInt32();
+                m_ColorSpace = reader.ReadInt32();
             }
             if (version[0] > 2020 || (version[0] == 2020 && version[1] >= 2)) //2020.2 and up
             {

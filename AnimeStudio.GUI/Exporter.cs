@@ -563,6 +563,23 @@ namespace AnimeStudio.GUI
                 fbxFormat = Properties.Settings.Default.fbxFormat
             };
             ModelExporter.ExportFbx(exportPath, convert, exportOptions);
+            if (convert is ModelConverter modelConverter)
+            {
+                ExportModelMetadata(modelConverter, exportPath);
+            }
+        }
+
+        private static void ExportModelMetadata(ModelConverter modelConverter, string fbxPath)
+        {
+            var metadata = new
+            {
+                FormatVersion = 1,
+                FbxFile = Path.GetFileName(fbxPath),
+                RootIdentities = modelConverter.RootIdentities,
+                RendererMaterialDependencies = modelConverter.RendererMaterialDependencies
+            };
+            var metadataPath = Path.ChangeExtension(fbxPath, ".model-metadata.json");
+            File.WriteAllText(metadataPath, JsonConvert.SerializeObject(metadata, Formatting.Indented));
         }
 
         public static bool ExportDumpFile(AssetItem item, string exportPath)

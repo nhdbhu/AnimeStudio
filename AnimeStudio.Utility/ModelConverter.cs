@@ -6,6 +6,46 @@ using System.Text;
 
 namespace AnimeStudio
 {
+    public sealed class ModelRootIdentity
+    {
+        public string Name { get; set; }
+        public long PathID { get; set; }
+        public string SourceFile { get; set; }
+        public string OriginalPath { get; set; }
+        public string TransformPath { get; set; }
+        public bool AnimatorPresent { get; set; }
+        public long? AnimatorPathID { get; set; }
+        public string AnimatorSourceFile { get; set; }
+        public string AnimatorOriginalPath { get; set; }
+    }
+
+    public sealed class RendererMaterialSlotDependency
+    {
+        public int SlotIndex { get; set; }
+        public int FileID { get; set; }
+        public long PathID { get; set; }
+        public bool IsNull { get; set; }
+        public bool Resolved { get; set; }
+        public string MaterialName { get; set; }
+        public string ResolvedSourceFile { get; set; }
+        public string ResolvedOriginalPath { get; set; }
+        public long? ResolvedPathID { get; set; }
+    }
+
+    public sealed class RendererMaterialDependency
+    {
+        public string RendererType { get; set; }
+        public long RendererPathID { get; set; }
+        public string RendererSourceFile { get; set; }
+        public string RendererOriginalPath { get; set; }
+        public string GameObjectName { get; set; }
+        public long? GameObjectPathID { get; set; }
+        public string GameObjectSourceFile { get; set; }
+        public string GameObjectOriginalPath { get; set; }
+        public string TransformPath { get; set; }
+        public List<RendererMaterialSlotDependency> Materials { get; set; } = new();
+    }
+
     public class ModelConverter : IImported
     {
         public ImportedFrame RootFrame { get; protected set; }
@@ -15,6 +55,13 @@ namespace AnimeStudio
         public List<ImportedKeyframedAnimation> AnimationList { get; protected set; } = new List<ImportedKeyframedAnimation>();
         public List<ImportedMorph> MorphList { get; protected set; } = new List<ImportedMorph>();
 
+        // Exact source identities for the selected export roots. Names are not unique.
+        public List<ModelRootIdentity> RootIdentities { get; } = new();
+
+        // Full renderer material dependency order is separate from FBX polygon material assignment.
+        // This preserves dependencies such as Ronova Wing A_32 without inventing submesh slots.
+        public List<RendererMaterialDependency> RendererMaterialDependencies { get; } = new();
+
         private Options options;
         private Avatar avatar;
         private HashSet<AnimationClip> animationClipHashSet = new HashSet<AnimationClip>();
@@ -22,11 +69,13 @@ namespace AnimeStudio
         private Dictionary<uint, string> bonePathHash = new Dictionary<uint, string>();
         private Dictionary<Texture2D, string> textureNameDictionary = new Dictionary<Texture2D, string>();
         private Dictionary<Transform, ImportedFrame> transformDictionary = new Dictionary<Transform, ImportedFrame>();
+        private HashSet<Renderer> capturedRendererMaterialDependencies = new HashSet<Renderer>();
         Dictionary<uint, string> morphChannelNames = new Dictionary<uint, string>();
 
         public ModelConverter(GameObject m_GameObject, Options options, AnimationClip[] animationList = null)
         {
             this.options = options;
+            CaptureRootIdentity(m_GameObject);
 
             if (m_GameObject.m_Animator != null)
             {
@@ -57,6 +106,7 @@ namespace AnimeStudio
             RootFrame = CreateFrame(rootName, Vector3.Zero, new Quaternion(0, 0, 0, 0), Vector3.One);
             foreach (var m_GameObject in m_GameObjects)
             {
+                CaptureRootIdentity(m_GameObject);
                 if (m_GameObject.m_Animator != null && animationList == null && this.options.collectAnimations)
                 {
                     CollectAnimationClip(m_GameObject.m_Animator);
@@ -84,6 +134,10 @@ namespace AnimeStudio
         public ModelConverter(Animator m_Animator, Options options, AnimationClip[] animationList = null)
         {
             this.options = options;
+            if (m_Animator.m_GameObject.TryGet(out var animatorGameObject))
+            {
+                CaptureRootIdentity(animatorGameObject);
+            }
 
             InitWithAnimator(m_Animator);
             if (animationList == null && this.options.collectAnimations)
@@ -101,6 +155,42 @@ namespace AnimeStudio
             }
             }
             ConvertAnimations();
+        }
+
+        private void CaptureRootIdentity(GameObject gameObject)
+        {
+            if (gameObject == null)
+            {
+                return;
+            }
+
+            var sourceFile = gameObject.assetsFile?.fileName ?? string.Empty;
+            var originalPath = gameObject.assetsFile?.originalPath ?? string.Empty;
+            if (RootIdentities.Any(x => x.PathID == gameObject.m_PathID &&
+                                        x.SourceFile == sourceFile &&
+                                        x.OriginalPath == originalPath))
+            {
+                return;
+            }
+
+            var identity = new ModelRootIdentity
+            {
+                Name = gameObject.m_Name,
+                PathID = gameObject.m_PathID,
+                SourceFile = sourceFile,
+                OriginalPath = originalPath,
+                TransformPath = gameObject.m_Transform != null ? GetTransformPathByFather(gameObject.m_Transform) : null,
+                AnimatorPresent = gameObject.m_Animator != null
+            };
+
+            if (gameObject.m_Animator != null)
+            {
+                identity.AnimatorPathID = gameObject.m_Animator.m_PathID;
+                identity.AnimatorSourceFile = gameObject.m_Animator.assetsFile?.fileName ?? string.Empty;
+                identity.AnimatorOriginalPath = gameObject.m_Animator.assetsFile?.originalPath ?? string.Empty;
+            }
+
+            RootIdentities.Add(identity);
         }
 
         private void InitWithAnimator(Animator m_Animator)
@@ -268,6 +358,8 @@ namespace AnimeStudio
 
         private void ConvertMeshRenderer(Renderer meshR)
         {
+            CaptureRendererMaterialDependencies(meshR);
+
             var mesh = GetMesh(meshR);
             if (mesh == null)
                 return;
@@ -583,6 +675,60 @@ namespace AnimeStudio
             }
 
             MeshList.Add(iMesh);
+        }
+
+        private void CaptureRendererMaterialDependencies(Renderer meshR)
+        {
+            if (meshR == null || !capturedRendererMaterialDependencies.Add(meshR))
+            {
+                return;
+            }
+
+            meshR.m_GameObject.TryGet(out var gameObject);
+            var dependency = new RendererMaterialDependency
+            {
+                RendererType = meshR.GetType().Name,
+                RendererPathID = meshR.m_PathID,
+                RendererSourceFile = meshR.assetsFile?.fileName ?? string.Empty,
+                RendererOriginalPath = meshR.assetsFile?.originalPath ?? string.Empty,
+                GameObjectName = gameObject?.m_Name ?? string.Empty,
+                GameObjectPathID = gameObject?.m_PathID,
+                GameObjectSourceFile = gameObject?.assetsFile?.fileName ?? string.Empty,
+                GameObjectOriginalPath = gameObject?.assetsFile?.originalPath ?? string.Empty,
+                TransformPath = gameObject?.m_Transform != null ? GetTransformPath(gameObject.m_Transform) : null
+            };
+
+            for (int slotIndex = 0; slotIndex < meshR.m_Materials.Count; slotIndex++)
+            {
+                var materialPtr = meshR.m_Materials[slotIndex];
+                var slot = new RendererMaterialSlotDependency
+                {
+                    SlotIndex = slotIndex,
+                    FileID = materialPtr.m_FileID,
+                    PathID = materialPtr.m_PathID,
+                    IsNull = materialPtr.IsNull
+                };
+
+                if (materialPtr.TryGet(out var material))
+                {
+                    slot.Resolved = true;
+                    slot.MaterialName = material.m_Name;
+                    slot.ResolvedSourceFile = material.assetsFile?.fileName ?? string.Empty;
+                    slot.ResolvedOriginalPath = material.assetsFile?.originalPath ?? string.Empty;
+                    slot.ResolvedPathID = material.m_PathID;
+
+                    // Export all resolved renderer materials when structured material export is enabled,
+                    // even when a renderer slot is not represented by an FBX polygon material index.
+                    if (options.exportMaterials)
+                    {
+                        options.materials?.Add(material);
+                    }
+                }
+
+                dependency.Materials.Add(slot);
+            }
+
+            RendererMaterialDependencies.Add(dependency);
         }
 
         private static Mesh GetMesh(Renderer meshR)
