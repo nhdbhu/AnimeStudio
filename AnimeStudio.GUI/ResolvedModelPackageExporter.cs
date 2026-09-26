@@ -1,4 +1,4 @@
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using System;
 using System.Collections;
@@ -41,15 +41,8 @@ namespace AnimeStudio.GUI
             public List<string> Errors = new();
             public List<string> Warnings = new();
             public Dictionary<string, int> ObjectCounts = new(StringComparer.Ordinal);
-            public List<PackageFile> Files = new();
         }
 
-        private sealed class PackageFile
-        {
-            public string Path;
-            public long Size;
-            public string SHA256;
-        }
 
         private sealed class Edge
         {
@@ -153,17 +146,6 @@ namespace AnimeStudio.GUI
             public string PayloadSHA256;
         }
 
-        private sealed class MeshFile
-        {
-            public ObjectIdentity Identity;
-            public int VertexCount;
-            public int SubMeshCount;
-            public bool HasNormals;
-            public bool HasTangents;
-            public bool HasColors;
-            public bool[] UV = new bool[8];
-        }
-
         private sealed class ShaderPassProgramRef
         {
             public int SubShaderIndex;
@@ -184,11 +166,22 @@ namespace AnimeStudio.GUI
         private sealed class Context
         {
             public string Root;
+            public string FbxPath;
             public Manifest Manifest;
             public readonly Queue<UnityObject> Queue = new();
             public readonly HashSet<string> Seen = new(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, string> HierarchyNames = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, string> ComponentIds = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, string> ComponentNodes = new(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, int> FileNameCounts = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, Shader> Shaders = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, List<string[]>> ShaderKeywordSets = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, string> MaterialPaths = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, string> TexturePaths = new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, string> CubemapPaths = new(StringComparer.OrdinalIgnoreCase);
+            public readonly List<object> TextureAssets = new();
+            public readonly List<object> CubemapAssets = new();
+            public readonly List<object> RuntimeEntries = new();
             public int EdgeCount;
         }
 
@@ -197,8 +190,9 @@ namespace AnimeStudio.GUI
             if (converter == null || converter.RootGameObjects.Count == 0) return;
 
             var modelName = Path.GetFileNameWithoutExtension(fbxPath);
-            var finalRoot = Path.Combine(Path.GetDirectoryName(fbxPath) ?? string.Empty, modelName + ".resolved");
-            var tempRoot = finalRoot + ".tmp";
+            var finalRoot = Path.GetDirectoryName(fbxPath) ?? string.Empty;
+            var tempRoot = Path.Combine(finalRoot, ".animestudio-resolved-tmp-" + Fix(modelName));
+            var obsoleteRoot = Path.Combine(finalRoot, modelName + ".resolved");
             if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
             Directory.CreateDirectory(tempRoot);
 
@@ -214,49 +208,80 @@ namespace AnimeStudio.GUI
                 Roots = converter.RootIdentities.ToList(),
                 RendererMaterialDependencies = converter.RendererMaterialDependencies.ToList()
             };
-            var ctx = new Context { Root = tempRoot, Manifest = manifest };
+            var ctx = new Context { Root = tempRoot, FbxPath = fbxPath, Manifest = manifest };
 
             try
             {
                 if (!manifest.ResolveDependenciesEnabled)
                     manifest.Errors.Add("AnimeStudio 'Resolve dependencies' is disabled. Reload the source corpus with dependency resolution enabled.");
                 if (!manifest.CABMapLoaded)
-                    manifest.Errors.Add("No CAB map is loaded. A resolved package cannot prove contextual external PPtrs without the Genshin CAB map.");
-
-                var modelDir = Dir(ctx, "Model");
-                File.Copy(fbxPath, Path.Combine(modelDir, Path.GetFileName(fbxPath)), true);
-                var modelMetadata = Path.ChangeExtension(fbxPath, ".model-metadata.json");
-                if (File.Exists(modelMetadata)) File.Copy(modelMetadata, Path.Combine(modelDir, Path.GetFileName(modelMetadata)), true);
+                    manifest.Errors.Add("No CAB map is loaded. Load the Genshin CAB map before resolved export.");
 
                 foreach (var root in converter.RootGameObjects)
                     CollectHierarchy(ctx, root, Fix(root.Name));
 
                 ProcessQueue(ctx);
                 ValidateRendererDependencies(ctx);
+                ExportCollectedShaders(ctx);
+                WriteHierarchy(ctx, converter.RootGameObjects);
+                WriteRuntimeManifest(ctx);
+                CleanupRedundantDefaultMaterial(ctx);
 
                 manifest.DummyDllLoaded = Studio.assemblyLoader.Loaded;
                 manifest.DummyDllAssemblyCount = Studio.assemblyLoader.LoadedAssemblyCount;
                 manifest.ValidationStatus = manifest.Errors.Count == 0 ? "VALIDATION_OK" : "VALIDATION_FAILED";
-                manifest.Files = BuildInventory(tempRoot);
-                WriteJson(Path.Combine(tempRoot, "manifest.json"), manifest);
-                File.WriteAllLines(Path.Combine(tempRoot, manifest.Errors.Count == 0 ? "VALIDATION_OK.txt" : "VALIDATION_FAILED.txt"),
-                    manifest.Errors.Count == 0 ? new[] { "Resolved model package validation passed." } : manifest.Errors);
+
+                var unresolved = manifest.DependencyEdges.Where(x => !x.Resolved).ToList();
+                WriteJson(Path.Combine(tempRoot, "dependencies.json"), new
+                {
+                    shader_path = "Shaders",
+                    texture_assets = ctx.TextureAssets,
+                    cubemap_assets = ctx.CubemapAssets,
+                    runtime_path = "Runtime",
+                    runtime_manifest = "Runtime/runtime.json",
+                    external_assets = Array.Empty<object>(),
+                    validation_status = manifest.ValidationStatus,
+                    resolution = new
+                    {
+                        edges = manifest.DependencyEdges.Count,
+                        unresolved = unresolved.Count,
+                        objects = manifest.ObjectCounts,
+                        cab_map_entries = manifest.CABMapEntries,
+                        dummy_dll_loaded = manifest.DummyDllLoaded,
+                        dummy_dll_assemblies = manifest.DummyDllAssemblyCount
+                    },
+                    unresolved_dependencies = unresolved,
+                    renderer_material_dependencies = manifest.RendererMaterialDependencies,
+                    warnings = manifest.Warnings
+                });
+
+                if (manifest.Errors.Count > 0)
+                    File.WriteAllLines(Path.Combine(tempRoot, "VALIDATION_FAILED.txt"), manifest.Errors);
             }
             catch (Exception ex)
             {
                 manifest.Errors.Add("Exporter exception: " + ex);
-                manifest.ValidationStatus = "VALIDATION_FAILED";
-                WriteJson(Path.Combine(tempRoot, "manifest.json"), manifest);
                 File.WriteAllLines(Path.Combine(tempRoot, "VALIDATION_FAILED.txt"), manifest.Errors);
             }
 
-            if (Directory.Exists(finalRoot)) Directory.Delete(finalRoot, true);
-            Directory.Move(tempRoot, finalRoot);
+            // Remove the obsolete v2 synthetic package if present, then merge the
+            // clean archive-shaped output beside the FBX. Normal AnimeStudio files
+            // (FBX and model-metadata.json) stay exactly where they already are.
+            if (Directory.Exists(obsoleteRoot)) Directory.Delete(obsoleteRoot, true);
+            foreach (var generatedDir in new[] { "Shaders", "Runtime", "Cubemaps" })
+            {
+                var path = Path.Combine(finalRoot, generatedDir);
+                if (Directory.Exists(path)) Directory.Delete(path, true);
+            }
+            MergeDirectory(tempRoot, finalRoot);
+            Directory.Delete(tempRoot, true);
 
             if (manifest.Errors.Count > 0)
-                throw new InvalidOperationException($"Resolved package validation failed for {modelName}. See {Path.Combine(finalRoot, "VALIDATION_FAILED.txt")}");
+                throw new InvalidOperationException($"Resolved export validation failed for {modelName}. See {Path.Combine(finalRoot, "VALIDATION_FAILED.txt")}");
 
-            Logger.Info($"Resolved package: {finalRoot}");
+            var staleFailure = Path.Combine(finalRoot, "VALIDATION_FAILED.txt");
+            if (File.Exists(staleFailure)) File.Delete(staleFailure);
+            Logger.Info($"Resolved model export completed in-place: {finalRoot}");
         }
 
         private static void CollectHierarchy(Context ctx, GameObject go, string path)
@@ -276,7 +301,11 @@ namespace AnimeStudio.GUI
                     if (pptr == null || pptr.IsNull) continue;
                     if (pptr.TryGet(out Component component))
                     {
-                        ctx.HierarchyNames[Key(component)] = path + "__" + component.GetType().Name + "__" + ordinal;
+                        var componentKey = Key(component);
+                        var componentId = $"component:{path}/{component.GetType().Name}#{ordinal}";
+                        ctx.HierarchyNames[componentKey] = path;
+                        ctx.ComponentIds[componentKey] = componentId;
+                        ctx.ComponentNodes[componentKey] = "node:" + path;
                         Enqueue(ctx, component);
                     }
                     else if (pptr.TryGet<UnityObject>(out var rawComponent))
@@ -405,98 +434,99 @@ namespace AnimeStudio.GUI
                 case Material material: ExportMaterial(ctx, material); break;
                 case Texture2D texture: ExportTexture(ctx, texture); break;
                 case Cubemap cubemap: ExportCubemap(ctx, cubemap); break;
-                case Shader shader: ExportShader(ctx, shader); break;
-                case Mesh mesh: ExportMesh(ctx, mesh); break;
+                case Shader shader: CollectShader(ctx, shader); break;
                 case Component component: ExportComponent(ctx, component); break;
-                case GameObject gameObject: ExportGameObjectMetadata(ctx, gameObject); break;
-                default: ExportDependency(ctx, obj); break;
+                // Mesh geometry is already represented by the FBX. GameObject hierarchy
+                // is aggregated into Runtime/hierarchy.json instead of hundreds of files.
+                case Mesh: break;
+                case GameObject: break;
+                default: break;
             }
         }
 
         private static void ExportMaterial(Context ctx, Material mat)
         {
-            var file = new MaterialFile
+            var relativePath = MaterialRelativePath(ctx, mat);
+            Directory.CreateDirectory(Dir(ctx, "Materials"));
+
+            // Keep the mature post-resolver material schema so the viewer/archive
+            // does not need a second translation layer. Add native 2021 keyword
+            // arrays + contextual identity as additive fields.
+            var keywordString = string.Join(" ", GetMaterialKeywords(mat));
+            WriteJson(Path.Combine(ctx.Root, relativePath.Replace('/', Path.DirectorySeparatorChar)), new
             {
-                Identity = Identity(mat),
-                Shader = PointerDto(mat.m_Shader),
-                ShaderKeywords = mat.m_ShaderKeywords,
-                ValidKeywords = mat.m_ValidKeywords,
-                InvalidKeywords = mat.m_InvalidKeywords,
-                LightmapFlags = mat.m_LightmapFlags,
-                EnableInstancingVariants = mat.m_EnableInstancingVariants,
-                DoubleSidedGI = mat.m_DoubleSidedGI,
-                CustomRenderQueue = mat.m_CustomRenderQueue,
-                StringTagMap = mat.m_StringTagMap,
-                DisabledShaderPasses = mat.m_DisabledShaderPasses,
-                Ints = mat.m_SavedProperties?.m_Ints,
-                Floats = mat.m_SavedProperties?.m_Floats,
-                Colors = mat.m_SavedProperties?.m_Colors
-            };
-            if (mat.m_SavedProperties?.m_TexEnvs != null)
+                m_Shader = mat.m_Shader,
+                m_SavedProperties = mat.m_SavedProperties,
+                m_Name = mat.m_Name,
+                Name = mat.Name,
+                m_ShaderKeywords = keywordString,
+                m_ValidKeywords = mat.m_ValidKeywords,
+                m_InvalidKeywords = mat.m_InvalidKeywords,
+                m_LightmapFlags = mat.m_LightmapFlags,
+                m_EnableInstancingVariants = mat.m_EnableInstancingVariants,
+                m_DoubleSidedGI = mat.m_DoubleSidedGI,
+                m_CustomRenderQueue = mat.m_CustomRenderQueue,
+                stringTagMap = mat.m_StringTagMap,
+                disabledShaderPasses = mat.m_DisabledShaderPasses,
+                unity = Identity(mat)
+            });
+
+            if (mat.m_Shader != null && mat.m_Shader.TryGet(out Shader shader))
             {
-                foreach (var kv in mat.m_SavedProperties.m_TexEnvs)
-                {
-                    var env = kv.Value;
-                    file.TextureBindings.Add(new { Name = kv.Key, Texture = PointerDto(env.m_Texture), env.m_Scale, env.m_Offset });
-                }
+                var shaderKey = Key(shader);
+                ctx.Shaders[shaderKey] = shader;
+                if (!ctx.ShaderKeywordSets.TryGetValue(shaderKey, out var sets))
+                    ctx.ShaderKeywordSets[shaderKey] = sets = new List<string[]>();
+                var keywords = GetMaterialKeywords(mat);
+                if (!sets.Any(x => x.SequenceEqual(keywords))) sets.Add(keywords);
             }
-            WriteJson(Path.Combine(Dir(ctx, "Materials"), UniqueFile(ctx, Fix(mat.Name), ".json", "Materials")), file);
-            WriteRawProvenance(ctx, mat);
         }
 
         private static void ExportTexture(Context ctx, Texture2D tex)
         {
-            var baseName = UniqueStem(ctx, Fix(tex.Name), "Textures");
-            var dir = Dir(ctx, "Textures");
-            var payloadName = baseName + ".payload.bin";
+            var convertedPath = TextureRelativePath(ctx, tex);
+            var baseName = Path.GetFileNameWithoutExtension(convertedPath);
+            string converted = null;
             string sha = null;
             try
             {
-                var data = tex.image_data.GetData();
-                File.WriteAllBytes(Path.Combine(dir, payloadName), data);
-                sha = SHA256Hex(data);
-            }
-            catch (Exception ex)
-            {
-                ctx.Manifest.Errors.Add($"Texture payload unavailable for {Describe(tex)}: {ex.Message}");
-            }
-
-            string converted = null;
-            try
-            {
                 using var image = tex.ConvertToImage(true);
-                if (image != null)
-                {
-                    converted = baseName + ".png";
-                    using var fs = File.Create(Path.Combine(dir, converted));
-                    image.WriteToStream(fs, ImageFormat.Png);
-                }
+                if (image == null) throw new InvalidOperationException("ConvertToImage returned null");
+                converted = convertedPath;
+                var output = Path.Combine(ctx.Root, converted.Replace('/', Path.DirectorySeparatorChar));
+                using (var fs = File.Create(output)) image.WriteToStream(fs, ImageFormat.Png);
+                sha = SHA256File(output);
             }
             catch (Exception ex)
             {
-                ctx.Manifest.Warnings.Add($"Texture conversion failed for {Describe(tex)}; exact payload is still preserved: {ex.Message}");
+                ctx.Manifest.Errors.Add($"Texture conversion failed for {Describe(tex)}: {ex.Message}");
             }
 
-            WriteJson(Path.Combine(dir, baseName + ".texture.json"), new TextureFile
+            ctx.TextureAssets.Add(new
             {
-                Identity = Identity(tex), Width = tex.m_Width, Height = tex.m_Height,
-                CompleteImageSize = tex.m_CompleteImageSize, MipsStripped = tex.m_MipsStripped,
-                TextureFormat = tex.m_TextureFormat.ToString(), MipMap = tex.m_MipMap, MipCount = tex.m_MipCount,
-                IsReadable = tex.m_IsReadable, IsPreProcessed = tex.m_IsPreProcessed,
-                IgnoreMasterTextureLimit = tex.m_IgnoreMasterTextureLimit, StreamingMipmaps = tex.m_StreamingMipmaps,
-                StreamingMipmapsPriority = tex.m_StreamingMipmapsPriority, ImageCount = tex.m_ImageCount,
-                TextureDimension = tex.m_TextureDimension, LightmapFormat = tex.m_LightmapFormat, ColorSpace = tex.m_ColorSpace,
-                PlatformBlob = tex.m_PlatformBlob, ExternalMipRelativeOffset = tex.m_ExternalMipRelativeOffset,
-                Sampler = tex.m_TextureSettings, Stream = tex.m_StreamData,
-                ExactPayload = payloadName, ConvertedImage = converted, PayloadSHA256 = sha
+                name = tex.Name,
+                cab = tex.assetsFile?.fileName,
+                path_id = tex.m_PathID,
+                class_id = (int)tex.type,
+                asset_kind = "Texture2D",
+                payload_kind = "converted_image",
+                payloads = converted == null ? Array.Empty<string>() : new[] { converted },
+                payload_sha256 = sha,
+                width = tex.m_Width, height = tex.m_Height, format = tex.m_TextureFormat.ToString(),
+                mip_count = tex.m_MipCount, color_space = tex.m_ColorSpace,
+                filter_mode = tex.m_TextureSettings?.m_FilterMode, aniso = tex.m_TextureSettings?.m_Aniso,
+                mip_bias = tex.m_TextureSettings?.m_MipBias, wrap_u = tex.m_TextureSettings?.m_WrapU,
+                wrap_v = tex.m_TextureSettings?.m_WrapV, wrap_w = tex.m_TextureSettings?.m_WrapW,
+                stream = tex.m_StreamData
             });
-            WriteRawProvenance(ctx, tex);
         }
 
         private static void ExportCubemap(Context ctx, Cubemap cube)
         {
-            var baseName = UniqueStem(ctx, Fix(cube.Name), "Cubemaps");
-            var dir = Dir(ctx, "Cubemaps");
+            var cubemapRelative = CubemapRelativePath(ctx, cube);
+            var baseName = Path.GetFileNameWithoutExtension(cubemapRelative);
+            var dir = Path.Combine(ctx.Root, Path.GetDirectoryName(cubemapRelative.Replace('/', Path.DirectorySeparatorChar)) ?? "Cubemaps");
+            Directory.CreateDirectory(dir);
             var payloadName = baseName + ".payload.bin";
             string sha = null;
             try
@@ -509,114 +539,214 @@ namespace AnimeStudio.GUI
             {
                 ctx.Manifest.Errors.Add($"Cubemap payload unavailable for {Describe(cube)}: {ex.Message}");
             }
-            WriteJson(Path.Combine(dir, baseName + ".cubemap.json"), new CubemapFile
+            var metadata = new
             {
-                Identity = Identity(cube), Width = cube.m_Width, Height = cube.m_Height,
-                CompleteImageSize = cube.m_CompleteImageSize, TextureFormat = cube.m_TextureFormat.ToString(),
-                MipMap = cube.m_MipMap, MipCount = cube.m_MipCount, IsReadable = cube.m_IsReadable,
-                IsPreProcessed = cube.m_IsPreProcessed, IgnoreMasterTextureLimit = cube.m_IgnoreMasterTextureLimit,
-                StreamingMipmaps = cube.m_StreamingMipmaps, StreamingMipmapsPriority = cube.m_StreamingMipmapsPriority,
-                ImageCount = cube.m_ImageCount, TextureDimension = cube.m_TextureDimension,
-                LightmapFormat = cube.m_LightmapFormat, ColorSpace = cube.m_ColorSpace,
-                SourceTextures = cube.m_SourceTextures?.Select(x => PointerDto(x)).ToArray(),
-                Sampler = cube.m_TextureSettings, Stream = cube.m_StreamData,
-                ExactPayload = payloadName, PayloadSHA256 = sha
-            });
-            WriteRawProvenance(ctx, cube);
+                name = cube.Name, identity = Identity(cube), width = cube.m_Width, height = cube.m_Height,
+                format = cube.m_TextureFormat.ToString(), mip_count = cube.m_MipCount, image_count = cube.m_ImageCount,
+                dimension = cube.m_TextureDimension, color_space = cube.m_ColorSpace, sampler = cube.m_TextureSettings,
+                stream = cube.m_StreamData, source_textures = cube.m_SourceTextures?.Select(x => PointerDto(x)).ToArray(),
+                payload = payloadName, payload_sha256 = sha
+            };
+            WriteJson(Path.Combine(dir, baseName + ".json"), metadata);
+            var payloadRelative = (Path.GetDirectoryName(cubemapRelative)?.Replace('\\', '/') ?? "Cubemaps") + "/" + payloadName;
+            ctx.CubemapAssets.Add(new { name = cube.Name, path = cubemapRelative, payload = payloadRelative, sha256 = sha });
         }
 
-        private static void ExportShader(Context ctx, Shader shader)
+        private static void CollectShader(Context ctx, Shader shader)
         {
-            var shaderRoot = Path.Combine(Dir(ctx, "Shaders"), UniqueStem(ctx, Fix(string.IsNullOrEmpty(shader.Name) ? "Shader" : shader.Name), "Shaders"));
-            Directory.CreateDirectory(shaderRoot);
-            File.WriteAllBytes(Path.Combine(shaderRoot, "shader.raw.bin"), shader.GetRawData());
+            ctx.Shaders[Key(shader)] = shader;
+        }
 
-            if (shader.m_IsRawOnly || shader.m_ParsedForm == null)
+        private static void ExportCollectedShaders(Context ctx)
+        {
+            foreach (var pair in ctx.Shaders.OrderBy(x => x.Value.Name, StringComparer.OrdinalIgnoreCase))
             {
-                ctx.Manifest.Errors.Add($"Referenced shader is raw-only/unparsed: {Describe(shader)}. Exact raw bytes were preserved but structured viewer semantics are incomplete.");
-                WriteJson(Path.Combine(shaderRoot, "shader.json"), new { Identity = Identity(shader), RawOnly = true });
-                return;
+                var shader = pair.Value;
+                if (shader.m_IsRawOnly || shader.m_ParsedForm == null)
+                {
+                    ctx.Manifest.Errors.Add($"Referenced shader is still raw-only/unparsed: {Describe(shader)}. Genshin structured shader export is incomplete.");
+                    continue;
+                }
+                try
+                {
+                    ExportCleanShader(ctx, shader, ctx.ShaderKeywordSets.TryGetValue(pair.Key, out var sets) ? sets : new List<string[]> { Array.Empty<string>() });
+                }
+                catch (Exception ex)
+                {
+                    ctx.Manifest.Errors.Add($"Shader export failed for {Describe(shader)}: {ex.Message}");
+                }
+            }
+        }
+
+        private sealed class ProgramChoice
+        {
+            public ShaderPassProgramRef Ref;
+            public ShaderConverter.ExtractedShaderProgram Program;
+            public string[] DynamicKeywords;
+            public int StaticMatchCount;
+        }
+
+        private static void ExportCleanShader(Context ctx, Shader shader, List<string[]> keywordSets)
+        {
+            var shaderName = string.IsNullOrWhiteSpace(shader.Name) ? "Shader" : shader.Name;
+            var shaderRoot = Path.Combine(Dir(ctx, "Shaders"), SafeShaderPath(shaderName));
+            Directory.CreateDirectory(shaderRoot);
+
+            var programs = shader.ExtractPrograms();
+            if (shader.compressedBlob != null && programs.Count == 0)
+                throw new InvalidOperationException("serialized program blob exists but no GPU programs were extracted");
+            var passRefs = BuildPassProgramMap(shader);
+            var programByBlob = programs
+                .GroupBy(x => x.VariantIndex)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Platform == ShaderCompilerPlatform.D3D11).First());
+
+            var variants = new List<object>();
+            foreach (var activeKeywords in keywordSets.OrderBy(x => string.Join(" ", x), StringComparer.Ordinal))
+            {
+                var passes = new List<object>();
+                for (var subIndex = 0; subIndex < shader.m_ParsedForm.m_SubShaders.Count; subIndex++)
+                {
+                    var sub = shader.m_ParsedForm.m_SubShaders[subIndex];
+                    for (var passIndex = 0; passIndex < sub.m_Passes.Count; passIndex++)
+                    {
+                        var pass = sub.m_Passes[passIndex];
+                        var refs = passRefs.Where(x => x.SubShaderIndex == subIndex && x.PassIndex == passIndex).ToList();
+                        var defaultPass = BuildSelectedPass(ctx, shader, shaderRoot, pass, refs, programByBlob, activeKeywords, null);
+                        if (defaultPass != null) passes.Add(defaultPass);
+
+                        // Unity shadow caster variants are runtime-selected rather than material keywords.
+                        // Preserve the two useful engine conditions without dumping hundreds of variants.
+                        foreach (var dynamicKeyword in new[] { "SHADOWS_CUBE", "SHADOWS_DEPTH" })
+                        {
+                            if (refs.Any(r => ProgramKeywords(programByBlob, r).Contains(dynamicKeyword, StringComparer.Ordinal)))
+                            {
+                                var conditional = BuildSelectedPass(ctx, shader, shaderRoot, pass, refs, programByBlob, activeKeywords, dynamicKeyword);
+                                if (conditional != null) passes.Add(conditional);
+                            }
+                        }
+                    }
+                }
+                variants.Add(new { keywords = activeKeywords, passes });
             }
 
-            var passProgramMap = BuildPassProgramMap(shader);
+            var properties = shader.m_ParsedForm.m_PropInfo?.m_Props?.Select(p => new
+            {
+                name = p.m_Name, type = (int)p.m_Type, flags = (int)p.m_Flags, @default = p.m_DefValue,
+                description = p.m_Description, attributes = p.m_Attributes, texture_dimension = (int)(p.m_DefTexture?.m_TexDim ?? TextureDimension.Unknown),
+                default_texture = p.m_DefTexture?.m_DefaultName
+            }).ToList();
+
             WriteJson(Path.Combine(shaderRoot, "shader.json"), new
             {
-                Identity = Identity(shader), RawOnly = false, shader.m_ParsedForm,
-                Platforms = shader.platforms, shader.stageCounts,
-                PassProgramMap = passProgramMap,
-                Dependencies = shader.m_Dependencies?.Select(x => PointerDto(x)).ToArray(),
-                NonModifiableTextures = shader.m_NonModifiableTextures?.Select(x => new { Name = x.Key, Texture = PointerDto(x.Value) }).ToArray()
+                name = shaderName,
+                properties,
+                variants,
+                dependencies = shader.m_Dependencies?.Select(x => PointerDto(x)).ToArray(),
+                non_modifiable_textures = shader.m_NonModifiableTextures?.Select(x => new { name = x.Key, texture = PointerDto(x.Value) }).ToArray()
             });
-            try
-            {
-                var converted = shader.Convert();
-                if (!string.IsNullOrEmpty(converted)) File.WriteAllText(Path.Combine(shaderRoot, "shader.converted.txt"), converted);
-            }
-            catch (Exception ex)
-            {
-                ctx.Manifest.Warnings.Add($"Shader text conversion failed for {Describe(shader)}: {ex.Message}");
-            }
+        }
 
-            try
-            {
-                var programs = shader.ExtractPrograms();
-                if (shader.compressedBlob != null && programs.Count == 0)
-                    ctx.Manifest.Errors.Add($"Shader {Describe(shader)} has a serialized program blob but no exact GPU programs were extracted.");
+        private static object BuildSelectedPass(Context ctx, Shader shader, string shaderRoot, SerializedPass pass, List<ShaderPassProgramRef> refs, Dictionary<int, ShaderConverter.ExtractedShaderProgram> programByBlob, string[] activeKeywords, string requiredDynamicKeyword)
+        {
+            var passName = !string.IsNullOrWhiteSpace(pass.m_Name) ? pass.m_Name : !string.IsNullOrWhiteSpace(pass.m_UseName) ? pass.m_UseName : "PASS";
+            var conditionName = requiredDynamicKeyword ?? "default";
+            var passDir = Path.Combine(shaderRoot, Fix(passName), Fix(conditionName));
+            string vertex = null, fragment = null, geometry = null, hull = null, domain = null;
+            object vertexBind = null, fragmentBind = null;
 
-                var programDir = Path.Combine(shaderRoot, "Programs");
-                Directory.CreateDirectory(programDir);
-                foreach (var p in programs)
+            foreach (var stage in new[] { "vertex", "fragment", "geometry", "hull", "domain" })
+            {
+                var choice = SelectProgramChoice(shader, refs.Where(x => x.Stage == stage), programByBlob, activeKeywords, requiredDynamicKeyword);
+                if (choice == null) continue;
+                Directory.CreateDirectory(passDir);
+                var bytes = choice.Program.ProgramCode ?? Array.Empty<byte>();
+                var hash = SHA256Hex(bytes).Substring(0, 12);
+                var fileName = stage + "." + hash + ProgramExtension(choice.Program.ProgramType);
+                File.WriteAllBytes(Path.Combine(passDir, fileName), bytes);
+                var relative = Path.GetRelativePath(shaderRoot, Path.Combine(passDir, fileName)).Replace('\\', '/');
+                switch (stage)
                 {
-                    var extension = ProgramExtension(p.ProgramType);
-                    var stem = $"{Fix(p.Platform.ToString())}__{Fix(p.ProgramType.ToString())}__blob{p.VariantIndex:D4}";
-                    File.WriteAllBytes(Path.Combine(programDir, stem + extension), p.ProgramCode);
-                    WriteJson(Path.Combine(programDir, stem + ".json"), new
-                    {
-                        p.PlatformIndex, p.Platform, BlobIndex = p.VariantIndex, p.ProgramType,
-                        p.Keywords, p.LocalKeywords, Size = p.ProgramCode.Length, SHA256 = SHA256Hex(p.ProgramCode)
-                    });
-                }
-
-                // Also expose the exact same program bytes through pass/stage-oriented paths.
-                // This is the human-readable archive view; BlobIndex remains provenance, not the canonical name.
-                foreach (var passRef in passProgramMap)
-                {
-                    var matchingPrograms = programs.Where(x => x.VariantIndex == (int)passRef.BlobIndex).ToList();
-                    if (matchingPrograms.Count == 0)
-                    {
-                        ctx.Manifest.Errors.Add($"Shader pass program missing for {Describe(shader)}: subshader {passRef.SubShaderIndex}, pass {passRef.PassIndex}, stage {passRef.Stage}, blob {passRef.BlobIndex}.");
-                        continue;
-                    }
-
-                    var passName = !string.IsNullOrWhiteSpace(passRef.PassName) ? passRef.PassName :
-                                   !string.IsNullOrWhiteSpace(passRef.UseName) ? passRef.UseName : $"Pass{passRef.PassIndex:D2}";
-                    var passDir = Path.Combine(shaderRoot, "Passes", $"SubShader{passRef.SubShaderIndex:D2}",
-                        Fix(passName), Fix(passRef.Stage));
-                    Directory.CreateDirectory(passDir);
-
-                    foreach (var p in matchingPrograms)
-                    {
-                        var platformDir = Path.Combine(passDir, Fix(p.Platform.ToString()));
-                        Directory.CreateDirectory(platformDir);
-                        var stem = $"variant{passRef.StageVariantIndex:D3}__blob{passRef.BlobIndex:D4}";
-                        var extension = ProgramExtension(p.ProgramType);
-                        File.WriteAllBytes(Path.Combine(platformDir, stem + extension), p.ProgramCode);
-                        WriteJson(Path.Combine(platformDir, stem + ".json"), new
-                        {
-                            passRef.SubShaderIndex, passRef.PassIndex, passRef.PassName, passRef.UseName,
-                            passRef.Stage, passRef.StageVariantIndex, passRef.BlobIndex,
-                            p.PlatformIndex, p.Platform, p.ProgramType,
-                            passRef.HardwareTier, passRef.BindChannels, passRef.KeywordIndices,
-                            passRef.GlobalKeywordIndices, passRef.LocalKeywordIndices,
-                            p.Keywords, p.LocalKeywords, Size = p.ProgramCode.Length, SHA256 = SHA256Hex(p.ProgramCode)
-                        });
-                    }
+                    case "vertex": vertex = relative; vertexBind = choice.Ref.BindChannels; break;
+                    case "fragment": fragment = relative; fragmentBind = choice.Ref.BindChannels; break;
+                    case "geometry": geometry = relative; break;
+                    case "hull": hull = relative; break;
+                    case "domain": domain = relative; break;
                 }
             }
-            catch (Exception ex)
+
+            if (vertex == null && fragment == null && string.IsNullOrWhiteSpace(pass.m_UseName)) return null;
+            return new
             {
-                ctx.Manifest.Errors.Add($"Exact shader program extraction failed for {Describe(shader)}: {ex.Message}");
+                name = passName, type = (int)pass.m_Type, state = ShaderStateDto(pass.m_State),
+                when = requiredDynamicKeyword == null ? null : new[] { requiredDynamicKeyword },
+                vertex, fragment, geometry, hull, domain, vertex_bind_channels = vertexBind, fragment_bind_channels = fragmentBind,
+                use_name = string.IsNullOrWhiteSpace(pass.m_UseName) ? null : pass.m_UseName
+            };
+        }
+
+        private static ProgramChoice SelectProgramChoice(Shader shader, IEnumerable<ShaderPassProgramRef> refs, Dictionary<int, ShaderConverter.ExtractedShaderProgram> programByBlob, string[] activeKeywords, string requiredDynamicKeyword)
+        {
+            var active = new HashSet<string>(activeKeywords ?? Array.Empty<string>(), StringComparer.Ordinal);
+            var choices = new List<ProgramChoice>();
+            foreach (var r in refs)
+            {
+                if (!programByBlob.TryGetValue((int)r.BlobIndex, out var program)) continue;
+                var staticKeywords = StaticKeywords(shader, r);
+                if (staticKeywords.Any(x => !active.Contains(x))) continue;
+                var all = ProgramKeywords(programByBlob, r);
+                if (requiredDynamicKeyword != null && !all.Contains(requiredDynamicKeyword, StringComparer.Ordinal)) continue;
+                if (requiredDynamicKeyword == null && (all.Contains("SHADOWS_CUBE", StringComparer.Ordinal) || all.Contains("SHADOWS_DEPTH", StringComparer.Ordinal))) continue;
+                var dynamic = all.Where(x => !active.Contains(x) && !staticKeywords.Contains(x, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+                choices.Add(new ProgramChoice { Ref = r, Program = program, DynamicKeywords = dynamic, StaticMatchCount = staticKeywords.Count });
             }
+            return choices
+                .OrderByDescending(x => x.StaticMatchCount)
+                .ThenBy(x => x.DynamicKeywords.Length)
+                .ThenBy(x => x.Ref.StageVariantIndex)
+                .FirstOrDefault();
+        }
+
+        private static List<string> StaticKeywords(Shader shader, ShaderPassProgramRef r)
+        {
+            var names = shader.m_ParsedForm?.m_KeywordNames ?? Array.Empty<string>();
+            var result = new List<string>();
+            foreach (var indices in new[] { r.KeywordIndices, r.LocalKeywordIndices })
+            {
+                if (indices == null) continue;
+                foreach (var index in indices) if (index < names.Length) result.Add(names[index]);
+            }
+            return result.Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        private static string[] ProgramKeywords(Dictionary<int, ShaderConverter.ExtractedShaderProgram> programByBlob, ShaderPassProgramRef r)
+        {
+            if (!programByBlob.TryGetValue((int)r.BlobIndex, out var p)) return Array.Empty<string>();
+            return (p.Keywords ?? Array.Empty<string>()).Concat(p.LocalKeywords ?? Array.Empty<string>()).Distinct(StringComparer.Ordinal).ToArray();
+        }
+
+        private static object ShaderStateDto(SerializedShaderState s)
+        {
+            if (s == null) return null;
+            object FV(SerializedShaderFloatValue v, float fallback = 0f) => v == null ? fallback : string.IsNullOrEmpty(v.name) ? v.val : new { property = v.name, @default = v.val };
+            object[] Blend(SerializedShaderRTBlendState b) => new[] { FV(b.srcBlend), FV(b.destBlend), FV(b.srcBlendAlpha), FV(b.destBlendAlpha), FV(b.blendOp), FV(b.blendOpAlpha), FV(b.colMask) };
+            object[] Stencil(SerializedStencilOp st) => new[] { FV(st.pass), FV(st.fail), FV(st.zFail), FV(st.comp) };
+            var tags = s.m_Tags?.tags?.ToDictionary(x => x.Key, x => x.Value) ?? new Dictionary<string, string>();
+            return new
+            {
+                blend_targets = s.rtBlend?.Select(Blend).ToArray(), separate_blend = s.rtSeparateBlend,
+                z_clip = FV(s.zClip, 1), z_test = FV(s.zTest, 4), z_write = FV(s.zWrite, 1), cull = FV(s.culling, 2),
+                conservative = FV(s.conservative), offset_factor = FV(s.offsetFactor), offset_units = FV(s.offsetUnits), alpha_to_mask = FV(s.alphaToMask),
+                stencil = new[] { Stencil(s.stencilOp), Stencil(s.stencilOpFront), Stencil(s.stencilOpBack) },
+                stencil_read_mask = FV(s.stencilReadMask, 255), stencil_write_mask = FV(s.stencilWriteMask, 255), stencil_ref = FV(s.stencilRef),
+                fog_start = FV(s.fogStart), fog_end = FV(s.fogEnd), fog_density = FV(s.fogDensity),
+                fog_color = s.fogColor == null ? new float[] { 0, 0, 0, 0 } : new[] { s.fogColor.x.val, s.fogColor.y.val, s.fogColor.z.val, s.fogColor.w.val },
+                fog_mode = (int)s.fogMode, tags, lod = s.m_LOD, lighting = s.lighting, fog_color_property = s.fogColor?.name
+            };
+        }
+
+        private static string SafeShaderPath(string shaderName)
+        {
+            return string.Join(Path.DirectorySeparatorChar, shaderName.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).Select(Fix));
         }
 
         private static string ProgramExtension(ShaderGpuProgramType type)
@@ -678,118 +808,267 @@ namespace AnimeStudio.GUI
             }
         }
 
-        private static void ExportMesh(Context ctx, Mesh mesh)
-        {
-            var info = new MeshFile
-            {
-                Identity = Identity(mesh), VertexCount = mesh.m_VertexCount,
-                SubMeshCount = mesh.m_SubMeshes?.Count ?? 0,
-                HasNormals = mesh.m_Normals?.Length > 0,
-                HasTangents = mesh.m_Tangents?.Length > 0,
-                HasColors = mesh.m_Colors?.Length > 0,
-                UV = new[] { mesh.m_UV0, mesh.m_UV1, mesh.m_UV2, mesh.m_UV3, mesh.m_UV4, mesh.m_UV5, mesh.m_UV6, mesh.m_UV7 }.Select(x => x?.Length > 0).ToArray()
-            };
-            WriteJson(Path.Combine(Dir(ctx, "Meshes"), UniqueFile(ctx, Fix(mesh.Name), ".mesh.json", "Meshes")), info);
-        }
-
         private static void ExportComponent(Context ctx, Component component)
         {
+            if (component is Transform || component is MeshFilter) return;
+            if (component is not Renderer && component is not MonoBehaviour && component is not Animator) return;
+
             if (component is Renderer renderer)
                 CaptureRendererMaterialDependency(ctx, renderer);
 
-            var name = ctx.HierarchyNames.TryGetValue(Key(component), out var hierarchy)
-                ? Fix(hierarchy.Replace('/', '_')) : Fix(component.Name);
-            if (string.IsNullOrWhiteSpace(name)) name = component.GetType().Name;
-            var file = Path.Combine(Dir(ctx, "Components"), UniqueFile(ctx, name, ".json", "Components"));
+            var key = Key(component);
+            var nodePath = ctx.HierarchyNames.TryGetValue(key, out var ownerPath) ? ownerPath : component.Name;
+            var nodeId = ctx.ComponentNodes.TryGetValue(key, out var knownNode) ? knownNode : "node:" + nodePath;
+            var componentId = ctx.ComponentIds.TryGetValue(key, out var knownId) ? knownId : $"component:{nodePath}/{component.GetType().Name}#1";
+            var ownerName = nodePath?.Split('/').LastOrDefault() ?? "node";
+            var ordinal = componentId.Contains('#') ? componentId[(componentId.LastIndexOf('#') + 1)..] : "1";
+            var fileName = UniqueFile(ctx, Fix(ownerName) + "__" + component.GetType().Name + "__" + ordinal, ".json", "Runtime/components");
+            var relativeFile = "components/" + fileName;
+            var output = Path.Combine(Dir(ctx, "Runtime/components"), fileName);
 
+            object data;
             if (component is MonoBehaviour mb)
             {
                 if (!Studio.assemblyLoader.Loaded)
                 {
-                    ctx.Manifest.Errors.Add($"DummyDll folder was not loaded before export; cannot decode MonoBehaviour {Describe(mb)}. Use Export -> Load DummyDll folder for resolved model export first.");
-                    WriteJson(file, new { Identity = Identity(mb), Decoded = false, Script = PointerDto(mb.m_Script) });
-                    WriteRawProvenance(ctx, mb);
-                    return;
+                    ctx.Manifest.Errors.Add($"DummyDll folder was not loaded; cannot decode MonoBehaviour {Describe(mb)}.");
+                    data = new { decoded = false, script = PointerDto(mb.m_Script) };
                 }
-                var typeTree = mb.ConvertToTypeTree(Studio.assemblyLoader);
-                if (typeTree == null)
+                else
                 {
-                    ctx.Manifest.Errors.Add($"DummyDll could not resolve MonoBehaviour type for {Describe(mb)}.");
-                    WriteJson(file, new { Identity = Identity(mb), Decoded = false, Script = PointerDto(mb.m_Script) });
-                    WriteRawProvenance(ctx, mb);
-                    return;
-                }
-                var decoded = mb.ToType(typeTree);
-                WriteJson(file, new { Identity = Identity(mb), Decoded = true, Data = decoded });
-                WriteRawProvenance(ctx, mb);
-                foreach (var ptr in GetPointers(decoded, mb))
-                {
-                    if (!ResolveEdge(ctx, mb, ptr)) break;
-                }
-                return;
-            }
-
-            // Parsed built-in component state is intentionally serialized here rather than reconstructed later.
-            // ParticleSystemRenderer has version/game-specific derived fields that are not all represented by
-            // AnimeStudio's Renderer base parser. When Unity type-tree data is available, preserve it too and
-            // traverse its PPtrs so particle meshes/effect references are not silently missed.
-            OrderedDictionary serializedData = null;
-            if (component is ParticleSystemRenderer && component.serializedType?.m_Type != null)
-            {
-                try
-                {
-                    serializedData = component.ToType();
-                    foreach (var ptr in GetPointers(serializedData, component))
+                    var typeTree = mb.ConvertToTypeTree(Studio.assemblyLoader);
+                    if (typeTree == null)
                     {
-                        if (!ResolveEdge(ctx, component, ptr)) break;
+                        ctx.Manifest.Errors.Add($"DummyDll could not resolve MonoBehaviour type for {Describe(mb)}.");
+                        data = new { decoded = false, script = PointerDto(mb.m_Script) };
+                    }
+                    else
+                    {
+                        var decoded = mb.ToType(typeTree);
+                        data = NormalizeRuntimeValue(ctx, mb, decoded, 0);
+                        foreach (var ptr in GetPointers(decoded, mb))
+                        {
+                            if (!ResolveEdge(ctx, mb, ptr)) break;
+                        }
                     }
                 }
-                catch (Exception ex)
+            }
+            else if (component is Renderer r)
+            {
+                data = new
                 {
-                    ctx.Manifest.Warnings.Add($"ParticleSystemRenderer type-tree decode failed for {Describe(component)}: {ex.Message}");
-                }
+                    m_Materials = r.m_Materials?.Select(p => RuntimeReference(ctx, component, p)).ToArray(),
+                    m_Enabled = TryReadPublicMember(component, "m_Enabled"),
+                    Name = component.Name
+                };
             }
-            WriteJson(file, new { Identity = Identity(component), Data = component, SerializedData = serializedData });
-            WriteRawProvenance(ctx, component);
-        }
-
-        private static void ExportGameObjectMetadata(Context ctx, GameObject go)
-        {
-            var hierarchy = ctx.HierarchyNames.TryGetValue(Key(go), out var p) ? p : go.Name;
-            WriteJson(Path.Combine(Dir(ctx, "Hierarchy"), UniqueFile(ctx, Fix(hierarchy.Replace('/', '_')), ".gameobject.json", "Hierarchy")), new
+            else // Animator
             {
-                Identity = Identity(go), HierarchyPath = hierarchy,
-                Components = go.m_Components?.Select(x => PointerDto(x)).ToArray(), AnimatorPresent = go.m_Animator != null
+                data = new
+                {
+                    m_Avatar = TryReadPublicMember(component, "m_Avatar"),
+                    m_Controller = TryReadPublicMember(component, "m_Controller"),
+                    m_HasTransformHierarchy = TryReadPublicMember(component, "m_HasTransformHierarchy"),
+                    m_Enabled = TryReadPublicMember(component, "m_Enabled"),
+                    Name = component.Name
+                };
+            }
+
+            WriteJson(output, new
+            {
+                id = componentId,
+                type = component.GetType().Name,
+                node = nodeId,
+                data,
+                unity = Identity(component)
             });
-            WriteRawProvenance(ctx, go);
+            ctx.RuntimeEntries.Add(new { id = componentId, type = component.GetType().Name, node = nodeId, file = relativeFile });
         }
 
-        private static void ExportDependency(Context ctx, UnityObject obj)
+        private static object RuntimeReference<T>(Context ctx, UnityObject owner, PPtr<T> ptr) where T : UnityObject
         {
-            var dir = Path.Combine(Dir(ctx, "Dependencies"), Fix(obj.type.ToString()));
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, UniqueFile(ctx, Fix(string.IsNullOrEmpty(obj.Name) ? obj.type.ToString() : obj.Name), ".json", "Dependencies/" + obj.type));
-            WriteJson(path, new { Identity = Identity(obj), Data = obj });
-            if (obj.GetType() == typeof(UnityObject))
-            {
-                WriteRawProvenance(ctx, obj);
-                ctx.Manifest.Warnings.Add($"Dependency {Describe(obj)} has no parsed AnimeStudio class; exact raw bytes kept under Provenance.");
-            }
+            if (ptr == null || ptr.IsNull) return null;
+            if (!ptr.TryGet(out T target))
+                return new { unresolved = true, file_id = ptr.m_FileID, path_id = ptr.m_PathID, target_cab = ptr.GetTargetFileName() };
+            return StableReference(ctx, target);
         }
 
-
-        private static void WriteRawProvenance(Context ctx, UnityObject obj)
+        private static object StableReference(Context ctx, UnityObject target)
         {
-            try
+            if (target == null) return null;
+            var key = Key(target);
+            if (target is Material material)
             {
-                var rawDir = Path.Combine(Dir(ctx, "Provenance"), "Raw", Fix(obj.type.ToString()));
-                Directory.CreateDirectory(rawDir);
-                var stem = Fix(string.IsNullOrEmpty(obj.Name) ? obj.type.ToString() : obj.Name);
-                File.WriteAllBytes(Path.Combine(rawDir, UniqueFile(ctx, stem, ".raw.bin", "Provenance/Raw/" + obj.type)), obj.GetRawData());
+                var path = MaterialRelativePath(ctx, material);
+                return new { @ref = "material:" + material.Name, path, Name = material.Name };
             }
-            catch (Exception ex)
+            if (target is Cubemap cubemap)
             {
-                ctx.Manifest.Warnings.Add($"Could not preserve raw provenance for {Describe(obj)}: {ex.Message}");
+                var path = CubemapRelativePath(ctx, cubemap);
+                return new { @ref = "cubemap:" + cubemap.Name, path, Name = cubemap.Name };
+            }
+            if (target is Texture2D texture)
+            {
+                var path = TextureRelativePath(ctx, texture);
+                return new { @ref = "texture:" + texture.Name, path, Name = texture.Name };
+            }
+            if (target is Component component)
+            {
+                if (component is Transform transform && transform.m_GameObject.TryGet(out var go) && ctx.HierarchyNames.TryGetValue(Key(go), out var transformPath))
+                    return new { @ref = "node:" + transformPath, unity_type = "Transform" };
+                if (ctx.ComponentIds.TryGetValue(key, out var componentId)) return new { @ref = componentId };
+            }
+            if (target is GameObject gameObject && ctx.HierarchyNames.TryGetValue(Key(gameObject), out var nodePath))
+                return new { @ref = "node:" + nodePath };
+            return new { unity = Identity(target) };
+        }
+
+        private static object NormalizeRuntimeValue(Context ctx, UnityObject owner, object value, int depth)
+        {
+            if (value == null || depth > 32) return value;
+            if (value is string || value is bool || value is byte || value is sbyte || value is short || value is ushort || value is int || value is uint || value is long || value is ulong || value is float || value is double || value is decimal || value.GetType().IsEnum)
+                return value;
+            if (value is byte[]) return value;
+
+            if (value is OrderedDictionary dict)
+            {
+                if (TryDictionaryPPtr(dict, owner, "runtime", out var ptr))
+                {
+                    var p = new PPtr<UnityObject>(ptr.FileID, ptr.PathID, owner.assetsFile);
+                    return p.TryGet(out var target) ? StableReference(ctx, target) : new { unresolved = true, file_id = ptr.FileID, path_id = ptr.PathID, target_cab = ptr.TargetCAB };
+                }
+                var result = new Dictionary<string, object>(StringComparer.Ordinal);
+                foreach (DictionaryEntry entry in dict)
+                    result[entry.Key?.ToString() ?? string.Empty] = NormalizeRuntimeValue(ctx, owner, entry.Value, depth + 1);
+                return result;
+            }
+
+            if (value is IDictionary genericDict)
+            {
+                var result = new Dictionary<string, object>(StringComparer.Ordinal);
+                foreach (DictionaryEntry entry in genericDict)
+                    result[entry.Key?.ToString() ?? string.Empty] = NormalizeRuntimeValue(ctx, owner, entry.Value, depth + 1);
+                return result;
+            }
+
+            if (value is IEnumerable enumerable)
+            {
+                var list = new List<object>();
+                foreach (var item in enumerable) list.Add(NormalizeRuntimeValue(ctx, owner, item, depth + 1));
+                return list;
+            }
+            return value;
+        }
+
+        private static object TryReadPublicMember(object value, string name)
+        {
+            if (value == null) return null;
+            var type = value.GetType();
+            var field = type.GetField(name, BindingFlags.Instance | BindingFlags.Public);
+            if (field != null) return field.GetValue(value);
+            var property = type.GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+            return property?.GetValue(value);
+        }
+
+        private static void WriteHierarchy(Context ctx, IReadOnlyList<GameObject> roots)
+        {
+            var nodes = new List<object>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in roots) AppendHierarchyNode(ctx, root, null, nodes, seen);
+            var rootRef = roots.Count == 1 && ctx.HierarchyNames.TryGetValue(Key(roots[0]), out var rootPath) ? "node:" + rootPath : null;
+            WriteJson(Path.Combine(Dir(ctx, "Runtime"), "hierarchy.json"), new
+            {
+                root = rootRef,
+                support_parent = (string)null,
+                nodes,
+                support_nodes = Array.Empty<object>()
+            });
+        }
+
+        private static void AppendHierarchyNode(Context ctx, GameObject go, string parent, List<object> nodes, HashSet<string> seen)
+        {
+            if (go == null || !seen.Add(Key(go))) return;
+            var path = ctx.HierarchyNames.TryGetValue(Key(go), out var p) ? p : go.Name;
+            var nodeId = "node:" + path;
+            var transform = go.m_Transform;
+            var componentIds = go.m_Components == null ? Array.Empty<string>() : go.m_Components
+                .Select(ptr => ptr.TryGet(out Component c) && ctx.ComponentIds.TryGetValue(Key(c), out var id) ? id : null)
+                .Where(x => x != null).ToArray();
+            nodes.Add(new
+            {
+                id = nodeId,
+                name = go.Name,
+                parent,
+                local_position = transform?.m_LocalPosition,
+                local_rotation = transform?.m_LocalRotation,
+                local_scale = transform?.m_LocalScale,
+                components = componentIds,
+                unity = new { cab = go.assetsFile?.fileName, gameobject_path_id = go.m_PathID, transform_path_id = transform?.m_PathID }
+            });
+            if (transform?.m_Children == null) return;
+            foreach (var childPtr in transform.m_Children)
+                if (childPtr.TryGet(out var childTransform) && childTransform.m_GameObject.TryGet(out var childGo))
+                    AppendHierarchyNode(ctx, childGo, nodeId, nodes, seen);
+        }
+
+        private static void WriteRuntimeManifest(Context ctx)
+        {
+            WriteJson(Path.Combine(Dir(ctx, "Runtime"), "runtime.json"), new
+            {
+                hierarchy = "hierarchy.json",
+                components = ctx.RuntimeEntries,
+                objects = Array.Empty<object>(),
+                external_assets = Array.Empty<object>()
+            });
+        }
+
+        private static void CleanupRedundantDefaultMaterial(Context ctx)
+        {
+            var authoritative = new HashSet<string>(ctx.Manifest.RendererMaterialDependencies
+                .SelectMany(r => r.Materials)
+                .Where(x => x.Resolved && !string.IsNullOrWhiteSpace(x.MaterialName))
+                .Select(x => x.MaterialName), StringComparer.OrdinalIgnoreCase);
+            if (authoritative.Contains("Avatar_Default_Mat")) return;
+            var path = Path.Combine(ctx.Root, "Materials", "Avatar_Default_Mat.json");
+            if (File.Exists(path)) File.Delete(path);
+        }
+
+        private static string[] GetMaterialKeywords(Material mat)
+        {
+            var result = new List<string>();
+            switch (mat.m_ShaderKeywords)
+            {
+                case string s:
+                    result.AddRange(s.Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
+                    break;
+                case string[] a:
+                    result.AddRange(a);
+                    break;
+                case IEnumerable<string> e:
+                    result.AddRange(e);
+                    break;
+            }
+            if (mat.m_ValidKeywords != null) result.AddRange(mat.m_ValidKeywords);
+            // Unity keeps enabled-but-currently-invalid keywords separately in
+            // 2021.3+. They still describe the serialized material variant and
+            // must not be silently discarded during shader selection.
+            if (mat.m_InvalidKeywords != null) result.AddRange(mat.m_InvalidKeywords);
+            return result.Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        private static void MergeDirectory(string source, string destination)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+                Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                File.Copy(file, target, true);
             }
         }
 
@@ -1058,6 +1337,36 @@ namespace AnimeStudio.GUI
         private static string Key(UnityObject obj) => (obj.assetsFile?.fileName ?? "") + "|" + (obj.assetsFile?.originalPath ?? "") + "|" + obj.m_PathID;
         private static string Describe(UnityObject obj) => $"{obj.type}:{obj.Name} [{obj.assetsFile?.fileName}:{obj.m_PathID}]";
 
+        private static string MaterialRelativePath(Context ctx, Material material)
+        {
+            var key = Key(material);
+            if (ctx.MaterialPaths.TryGetValue(key, out var path)) return path;
+            var stem = UniqueStem(ctx, Fix(string.IsNullOrWhiteSpace(material.Name) ? "Material" : material.Name), "Materials");
+            path = "Materials/" + stem + ".json";
+            ctx.MaterialPaths[key] = path;
+            return path;
+        }
+
+        private static string TextureRelativePath(Context ctx, Texture2D texture)
+        {
+            var key = Key(texture);
+            if (ctx.TexturePaths.TryGetValue(key, out var path)) return path;
+            var stem = UniqueStem(ctx, Fix(string.IsNullOrWhiteSpace(texture.Name) ? "Texture" : texture.Name), "Textures");
+            path = stem + ".png";
+            ctx.TexturePaths[key] = path;
+            return path;
+        }
+
+        private static string CubemapRelativePath(Context ctx, Cubemap cubemap)
+        {
+            var key = Key(cubemap);
+            if (ctx.CubemapPaths.TryGetValue(key, out var path)) return path;
+            var stem = UniqueStem(ctx, Fix(string.IsNullOrWhiteSpace(cubemap.Name) ? "Cubemap" : cubemap.Name), "Cubemaps");
+            path = $"Cubemaps/{stem}/{stem}.json";
+            ctx.CubemapPaths[key] = path;
+            return path;
+        }
+
         private static string Dir(Context ctx, string name)
         {
             var p = Path.Combine(ctx.Root, name); Directory.CreateDirectory(p); return p;
@@ -1083,21 +1392,6 @@ namespace AnimeStudio.GUI
             return string.IsNullOrEmpty(result) ? "unnamed" : result;
         }
 
-
-        private static List<PackageFile> BuildInventory(string root)
-        {
-            var result = new List<PackageFile>();
-            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
-            {
-                var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
-                if (string.Equals(relative, "manifest.json", StringComparison.OrdinalIgnoreCase) ||
-                    relative.StartsWith("VALIDATION_", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                var info = new FileInfo(file);
-                result.Add(new PackageFile { Path = relative, Size = info.Length, SHA256 = SHA256File(file) });
-            }
-            return result;
-        }
 
         private static string SHA256File(string path)
         {

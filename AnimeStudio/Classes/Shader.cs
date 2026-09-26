@@ -318,7 +318,12 @@ namespace AnimeStudio
             stencilOpBack = new SerializedStencilOp(reader);
             stencilReadMask = new SerializedShaderFloatValue(reader);
             stencilWriteMask = new SerializedShaderFloatValue(reader);
-            stencilRef = new SerializedShaderFloatValue(reader);
+            // Genshin 7.1 omits serialized stencilRef here. Reading it shifts the
+            // entire remainder of SerializedShaderState and makes every GI shader fail.
+            if (!reader.Game.Type.IsGISubGroup())
+            {
+                stencilRef = new SerializedShaderFloatValue(reader);
+            }
             fogStart = new SerializedShaderFloatValue(reader);
             fogEnd = new SerializedShaderFloatValue(reader);
             fogDensity = new SerializedShaderFloatValue(reader);
@@ -672,6 +677,9 @@ namespace AnimeStudio
         public List<BufferBinding> m_ConstantBufferBindings;
         public List<UAVParameter> m_UAVParams;
         public List<SamplerParameter> m_Samplers;
+        // Genshin 7.1 carries 20 opaque bytes after shader requirements. Preserve
+        // them instead of treating the next subprogram as part of this one.
+        public byte[] m_GenshinExtraMetadata;
 
         public static bool HasGlobalLocalKeywordIndices(SerializedType type) => type.Match("E99740711222CD922E9A6F92FF1EB07A", "450A058C218DAF000647948F2F59DA6D", "B239746E4EC6E4D6D7BA27C84178610A", "3FD560648A91A99210D5DDF2BE320536", "66839B5040F09A101A02DDDC9E522F23", "0B07D09734C07EBABF387D3CBC8BEBF0");
         public static bool HasInstancedStructuredBuffers(SerializedType type) => type.Match("E99740711222CD922E9A6F92FF1EB07A", "B239746E4EC6E4D6D7BA27C84178610A", "3FD560648A91A99210D5DDF2BE320536", "66839B5040F09A101A02DDDC9E522F23", "0B07D09734C07EBABF387D3CBC8BEBF0");
@@ -688,13 +696,16 @@ namespace AnimeStudio
             }
 
             m_BlobIndex = reader.ReadUInt32();
-            if (HasIsAdditionalBlob(reader.serializedType))
+            // Genshin 7.1 serializes these fields even when its type hash is not in
+            // AnimeStudio's stock Unity hash tables. The raw 7.1 objects were
+            // verified as: blobIndex, additionalBlob, Hash128, dependentBlobIndex.
+            if (reader.Game.Type.IsGISubGroup() || HasIsAdditionalBlob(reader.serializedType))
             {
                 var m_IsAdditionalBlob = reader.ReadBoolean();
                 reader.AlignStream();
             }
 
-            if (HasProgramHash(reader.serializedType))
+            if (reader.Game.Type.IsGISubGroup() || HasProgramHash(reader.serializedType))
             {
                 var m_ProgramHash = new Hash128(reader);
                 var m_DependentBlobIndex = reader.ReadInt32();
@@ -824,7 +835,13 @@ namespace AnimeStudio
                     }
                 }
 
-                if (HasInstancedStructuredBuffers(reader.serializedType))
+                if (reader.Game.Type.IsGISubGroup())
+                {
+                    // Verified against the original Genshin 7.1 shader objects.
+                    // Keep this opaque block so structured parsing remains aligned.
+                    m_GenshinExtraMetadata = reader.ReadBytes(20);
+                }
+                else if (HasInstancedStructuredBuffers(reader.serializedType))
                 {
                     int numInstancedStructuredBuffers = reader.ReadInt32();
                     var m_InstancedStructuredBuffers = new List<ConstantBuffer>();
@@ -910,7 +927,7 @@ namespace AnimeStudio
                 m_CommonParameters = new SerializedProgramParameters(reader);
             }
 
-            if (version[0] > 2022 || (version[0] == 2022 && version[1] >= 1)) //2022.1 and up
+            if (reader.Game.Type.IsGISubGroup() || version[0] > 2022 || (version[0] == 2022 && version[1] >= 1)) // GI 7.1 also has this array
             {
                 m_SerializedKeywordStateMask = reader.ReadUInt16Array();
                 reader.AlignStream();
@@ -948,11 +965,16 @@ namespace AnimeStudio
         public SerializedTagMap m_Tags;
         public ushort[] m_SerializedKeywordStateMask;
 
-        public SerializedPass(ObjectReader reader)
+        public SerializedPass(ObjectReader reader) : this(reader, reader.Game.Type.IsGISubGroup() ? 1 : -1)
+        {
+        }
+
+        internal SerializedPass(ObjectReader reader, int genshinKeywordMaskCount)
         {
             var version = reader.version;
 
-            if (version[0] > 2020 || (version[0] == 2020 && version[1] >= 2)) //2020.2 and up
+            // Genshin 7.1 omits Unity's editorDataHash/platform prelude here.
+            if (!reader.Game.Type.IsGISubGroup() && (version[0] > 2020 || (version[0] == 2020 && version[1] >= 2))) //2020.2 and up
             {
                 int numEditorDataHash = reader.ReadInt32();
                 m_EditorDataHash = new List<Hash128>();
@@ -1010,7 +1032,20 @@ namespace AnimeStudio
             m_Name = reader.ReadAlignedString();
             m_TextureName = reader.ReadAlignedString();
             m_Tags = new SerializedTagMap(reader);
-            if (version[0] == 2021 && version[1] >= 2) //2021.2 ~2021.x
+            if (reader.Game.Type.IsGISubGroup())
+            {
+                // Genshin 7.1 pass records carry either one or two trailing
+                // keyword-state-mask arrays. SerializedSubShader chooses the
+                // correct count by bounded backtracking across the pass list.
+                m_SerializedKeywordStateMask = reader.ReadUInt16Array();
+                reader.AlignStream();
+                if (genshinKeywordMaskCount >= 2)
+                {
+                    m_GlobalKeywordMask = reader.ReadUInt16Array();
+                    reader.AlignStream();
+                }
+            }
+            else if (version[0] == 2021 && version[1] >= 2) //2021.2 ~2021.x
             {
                 m_SerializedKeywordStateMask = reader.ReadUInt16Array();
                 reader.AlignStream();
@@ -1042,14 +1077,88 @@ namespace AnimeStudio
         public SerializedSubShader(ObjectReader reader)
         {
             int numPasses = reader.ReadInt32();
-            m_Passes = new List<SerializedPass>();
-            for (int i = 0; i < numPasses; i++)
+            if (!reader.Game.Type.IsGISubGroup())
             {
-                m_Passes.Add(new SerializedPass(reader));
+                m_Passes = new List<SerializedPass>();
+                for (int i = 0; i < numPasses; i++)
+                {
+                    m_Passes.Add(new SerializedPass(reader));
+                }
+
+                m_Tags = new SerializedTagMap(reader);
+                m_LOD = reader.ReadInt32();
+                return;
             }
 
-            m_Tags = new SerializedTagMap(reader);
-            m_LOD = reader.ReadInt32();
+            // Genshin 7.1 differs from stock Unity in two important ways:
+            //  * each pass has one OR two trailing keyword-mask arrays;
+            //  * the SubShader tail is LOD followed by tags (stock is tags, LOD).
+            // The mask count is not uniform even within one shader, so resolve it
+            // with bounded backtracking. A typical GI shader has < 10 passes, thus
+            // this remains tiny and deterministic.
+            long passesStart = reader.Position;
+            if (!TryReadGenshinPasses(reader, numPasses, 0, new List<SerializedPass>(), out var passes, out var lod, out var tags))
+            {
+                reader.Position = passesStart;
+                throw new InvalidDataException($"Unable to parse Genshin SerializedSubShader with {numPasses} passes.");
+            }
+
+            m_Passes = passes;
+            m_LOD = lod;
+            m_Tags = tags;
+        }
+
+        private static bool TryReadGenshinPasses(
+            ObjectReader reader, int numPasses, int index, List<SerializedPass> parsed,
+            out List<SerializedPass> result, out int lod, out SerializedTagMap tags)
+        {
+            result = null;
+            lod = 0;
+            tags = null;
+
+            if (index == numPasses)
+            {
+                long tailStart = reader.Position;
+                try
+                {
+                    int candidateLod = reader.ReadInt32();
+                    if (candidateLod < -100000 || candidateLod > 100000)
+                        throw new InvalidDataException($"Implausible Genshin SubShader LOD {candidateLod}.");
+                    var candidateTags = new SerializedTagMap(reader);
+                    result = new List<SerializedPass>(parsed);
+                    lod = candidateLod;
+                    tags = candidateTags;
+                    return true;
+                }
+                catch
+                {
+                    reader.Position = tailStart;
+                    return false;
+                }
+            }
+
+            // Prefer two masks because that is the common GI 7.1 case, then
+            // fall back to one for the terminal/special passes that only carry one.
+            foreach (int maskCount in new[] { 2, 1 })
+            {
+                long passStart = reader.Position;
+                try
+                {
+                    var pass = new SerializedPass(reader, maskCount);
+                    parsed.Add(pass);
+                    if (TryReadGenshinPasses(reader, numPasses, index + 1, parsed, out result, out lod, out tags))
+                        return true;
+                    parsed.RemoveAt(parsed.Count - 1);
+                }
+                catch
+                {
+                    if (parsed.Count > index)
+                        parsed.RemoveAt(parsed.Count - 1);
+                }
+                reader.Position = passStart;
+            }
+
+            return false;
         }
     }
 
@@ -1104,7 +1213,14 @@ namespace AnimeStudio
                 m_SubShaders.Add(new SerializedSubShader(reader));
             }
 
-            if (version[0] > 2021 || (version[0] == 2021 && version[1] >= 2)) //2021.2 and up
+            if (reader.Game.Type.IsGISubGroup())
+            {
+                // Genshin 7.1 keeps the shader-level keyword-name array, but
+                // omits the following stock Unity keyword-flags byte array.
+                // In the inspected 7.1 shaders this name array is normally empty.
+                m_KeywordNames = reader.ReadStringArray();
+            }
+            else if (version[0] > 2021 || (version[0] == 2021 && version[1] >= 2)) //2021.2 and up
             {
                 m_KeywordNames = reader.ReadStringArray();
                 if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
@@ -1136,8 +1252,13 @@ namespace AnimeStudio
                 }
             }
 
-            m_DisableNoSubshadersMessage = reader.ReadBoolean();
-            reader.AlignStream();
+            if (!reader.Game.Type.IsGISubGroup())
+            {
+                m_DisableNoSubshadersMessage = reader.ReadBoolean();
+                reader.AlignStream();
+            }
+            // Genshin 7.1 omits m_DisableNoSubshadersMessage here; the
+            // platform array follows the custom-editor list directly.
         }
     }
 
@@ -1292,7 +1413,16 @@ namespace AnimeStudio
                 }
                 else
                 {
-                    if (version[0] > 2019 || (version[0] == 2019 && version[1] >= 3)) //2019.3 and up
+                    if (reader.Game.Type.IsGISubGroup())
+                    {
+                        // Genshin 7.1 keeps the legacy one-offset-per-platform
+                        // layout even on its 2021.x Unity base. Treat each flat
+                        // array entry as one blob block for ShaderConverter.
+                        offsets = reader.ReadUInt32Array().Select(x => new[] { x }).ToArray();
+                        compressedLengths = reader.ReadUInt32Array().Select(x => new[] { x }).ToArray();
+                        decompressedLengths = reader.ReadUInt32Array().Select(x => new[] { x }).ToArray();
+                    }
+                    else if (version[0] > 2019 || (version[0] == 2019 && version[1] >= 3)) //2019.3 and up
                     {
                         offsets = reader.ReadUInt32ArrayArray();
                         compressedLengths = reader.ReadUInt32ArrayArray();
